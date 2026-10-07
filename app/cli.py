@@ -1,8 +1,9 @@
-"""Command line for steps 0-1.
+"""Command line tools. The full app (dashboard + background sync) starts with `python -m app`.
 
     python -m app.cli set-password you@gmail.com   save an account's password in the OS keyring
     python -m app.cli check                         try logging in to every account
     python -m app.cli sync                          fetch new mail from every account
+    python -m app.cli classify                      sort unscored mail (rules + Gemma)
     python -m app.cli list [--account EMAIL] [-n 30] show the newest saved mail
     python -m app.cli test-ai                       check your OpenRouter key + Gemma
 """
@@ -43,12 +44,21 @@ def cmd_sync(args):
             print(f"{email:<35} {result if isinstance(result, str) else f'{result} new'}")
 
 
+def cmd_classify(args):
+    from app.ai.classifier import classify_pending
+
+    logging.getLogger().setLevel(logging.INFO)
+    with db.connect() as conn:
+        print(classify_pending(conn))
+
+
 def cmd_list(args):
     with db.connect() as conn:
         for m in db.recent_messages(conn, args.n, args.account):
             dot = " " if m["is_read"] else "●"
             sender = (m["from_name"] or m["from_email"])[:24]
-            print(f"{dot} {m['received_at'][:16]}  {m['account_label'][:14]:<14}  {sender:<24}  {m['subject'][:60]}")
+            score = f"{m['priority_score']:.1f}" if m["priority_score"] is not None else "  - "
+            print(f"{dot} {score}  {m['received_at'][:16]}  {m['account_label'][:14]:<14}  {sender:<24}  {m['subject'][:60]}")
 
 
 def cmd_test_ai(args):
@@ -80,6 +90,7 @@ def main():
 
     sub.add_parser("check", help="test login to every account").set_defaults(func=cmd_check)
     sub.add_parser("sync", help="fetch new mail").set_defaults(func=cmd_sync)
+    sub.add_parser("classify", help="sort unscored mail").set_defaults(func=cmd_classify)
 
     s = sub.add_parser("list", help="show newest saved mail")
     s.add_argument("-n", type=int, default=30)
