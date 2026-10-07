@@ -4,6 +4,7 @@
     python -m app.cli check                         try logging in to every account
     python -m app.cli sync                          fetch new mail from every account
     python -m app.cli classify                      sort unscored mail (rules + Gemma)
+    python -m app.cli run-once                      sync + sort + notify, once
     python -m app.cli list [--account EMAIL] [-n 30] show the newest saved mail
     python -m app.cli test-ai                       check your OpenRouter key + Gemma
 """
@@ -52,6 +53,13 @@ def cmd_classify(args):
         print(classify_pending(conn))
 
 
+def cmd_run_once(args):
+    from app.runner import run_cycle
+
+    logging.getLogger().setLevel(logging.INFO)
+    print(run_cycle())
+
+
 def cmd_list(args):
     with db.connect() as conn:
         for m in db.recent_messages(conn, args.n, args.account):
@@ -91,6 +99,7 @@ def main():
     sub.add_parser("check", help="test login to every account").set_defaults(func=cmd_check)
     sub.add_parser("sync", help="fetch new mail").set_defaults(func=cmd_sync)
     sub.add_parser("classify", help="sort unscored mail").set_defaults(func=cmd_classify)
+    sub.add_parser("run-once", help="sync + sort + notify once").set_defaults(func=cmd_run_once)
 
     s = sub.add_parser("list", help="show newest saved mail")
     s.add_argument("-n", type=int, default=30)
