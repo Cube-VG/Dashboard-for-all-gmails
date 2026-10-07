@@ -10,6 +10,7 @@ from app.sync import imap_sync
 class FakeMessage(MailMessage):
     def __init__(self, uid, raw, seen=False):
         super().__init__([(b"", raw)])
+        self.raw, self.seen = raw, seen
         self._uid, self._flags = str(uid), ("\\Seen",) if seen else ()
 
     @property
@@ -72,12 +73,33 @@ class FakeMailBox:
             return [str(u) for u in (found or [max(self.server.messages)])]
         return [str(u) for u in self.server.messages]
 
-    def fetch(self, uid_list, mark_seen, bulk):
-        assert mark_seen is False
-        if not uid_list:  # like imap-tools: an empty uid_list means "search ALL"
-            uid_list = [str(u) for u in self.server.messages]
-        self.server.fetched.extend(uid_list)
-        return [self.server.messages[int(u)] for u in uid_list]
+    @property
+    def client(self):
+        return FakeIMAPClient(self.server)
+
+
+class FakeIMAPClient:
+    """Answers UID FETCH the way imaplib returns it: (header, literal) tuples, each followed by
+    the rest of its line. Odd messages put UID/FLAGS after the literal, like Gmail sometimes does."""
+
+    def __init__(self, server):
+        self.server = server
+
+    def uid(self, command, uid_set, parts):
+        assert command == "fetch" and "BODY.PEEK[]<0." in parts  # partial, and never marks read
+        cap = int(parts.split("<0.")[1].split(">")[0])
+        uids = uid_set.split(",")
+        assert uids and all(uids), "empty UID set would fetch nothing (or everything)"
+        self.server.fetched.extend(uids)
+        data = []
+        for n, u in enumerate(uids, 1):
+            m = self.server.messages[int(u)]
+            body, flags = m.raw[:cap], "\\Seen" if m.seen else ""
+            if n % 2:
+                data += [(f"{n} (UID {u} RFC822.SIZE {len(m.raw)} FLAGS ({flags}) BODY[]<0> {{{len(body)}}}".encode(), body), b")"]
+            else:
+                data += [(f"{n} (RFC822.SIZE {len(m.raw)} BODY[]<0> {{{len(body)}}}".encode(), body), f" UID {u} FLAGS ({flags}))".encode()]
+        return "OK", data
 
 
 @pytest.fixture
@@ -209,3 +231,40 @@ def test_refresh_bodies_rewrites_text_only(conn):
     m = db.recent_messages(conn, 1)[0]
     assert n == 1 and m["body_text"] == "Line one\n\nLine two"
     assert (m["importance"], m["urgency"], m["scored_by"], m["is_read"]) == (5, 5, "user", 1)
+
+
+def test_seen_flag_and_uid_parsed_in_both_response_layouts(conn):
+    server = FakeServer()
+    server.add(1, subject="One", seen=True)
+    server.add(2, subject="Two", seen=True)   # flags arrive after the literal
+    server.add(3, subject="Three")
+    run(conn, server)
+    got = {m["subject"]: (m["uid"], m["is_read"]) for m in db.recent_messages(conn, 10)}
+    assert got == {"One": (1, 1), "Two": (2, 1), "Three": (3, 0)}
+
+
+def test_big_attachment_is_cut_off_but_text_and_flag_survive(conn, monkeypatch):
+    monkeypatch.setattr(imap_sync, "MAX_FETCH_BYTES", 4000)
+    m = EmailMessage()
+    m["From"], m["To"], m["Subject"] = "Bank <s@bank.com>", "me@example.com", "Statement"
+    m["Date"] = "Tue, 06 Oct 2026 09:30:00 +0530"
+    m.set_content("Your statement is attached.\n\nThanks")
+    m.add_attachment(b"%PDF" + bytes(range(256)) * 400, maintype="application", subtype="pdf",
+                     filename="statement.pdf")
+    server = FakeServer()
+    server.messages[7] = FakeMessage(7, m.as_bytes())
+    run(conn, server)
+    row = db.recent_messages(conn, 1)[0]
+    assert row["body_text"] == "Your statement is attached.\n\nThanks"
+    assert row["has_attachments"] == 1
+
+
+def test_refresh_bodies_reports_progress(conn):
+    server = FakeServer()
+    for uid in range(1, 121):
+        server.add(uid, subject=f"M{uid}")
+    run(conn, server)
+    seen = []
+    imap_sync.refresh_bodies(conn, ACCOUNT, "2000-01-01", mailbox_factory=lambda h, p: FakeMailBox(server),
+                             progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(50, 120), (100, 120), (120, 120)]

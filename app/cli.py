@@ -92,11 +92,15 @@ def cmd_refresh_bodies(args):
     since = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
     with db.connect() as conn:
         for a in config.load_accounts():
+            def show(done, total, email=a.email):
+                print(f"\r{email:<35} {done}/{total}", end="", flush=True)
+            print(f"{a.email:<35} connecting…", end="", flush=True)
             try:
-                print(f"{a.email:<35} {refresh_bodies(conn, a, since)} emails refreshed")
+                n = refresh_bodies(conn, a, since, progress=show)
+                print(f"\r{a.email:<35} {n} emails refreshed      ")
             except Exception as exc:  # noqa: BLE001
                 conn.rollback()
-                print(f"{a.email:<35} error: {exc}")
+                print(f"\r{a.email:<35} error: {exc}")
 
 
 def cmd_test_ai(args):

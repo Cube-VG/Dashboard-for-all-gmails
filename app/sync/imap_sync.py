@@ -19,10 +19,33 @@ SNIPPET_CHARS = 300
 BODY_CHARS = 20_000
 FETCH_BULK = 50
 IMAP_TIMEOUT = 60  # seconds; a stalled connection must not block every later sync
+# Download at most this much of each email: plenty for its text, and it skips most of a
+# big attachment (bank PDFs etc.), which is what made syncing slow.
+MAX_FETCH_BYTES = 300_000
 
 
 def connect_mailbox(host: str, port: int) -> MailBox:
     return MailBox(host, port, timeout=IMAP_TIMEOUT)
+
+
+def fetch_messages(mailbox: MailBox, uids: list[str]):
+    """Yield each message, downloading only its first MAX_FETCH_BYTES. Never marks mail read."""
+    parts = f"(UID FLAGS RFC822.SIZE BODY.PEEK[]<0.{MAX_FETCH_BYTES}>)"
+    for start in range(0, len(uids), FETCH_BULK):
+        typ, data = mailbox.client.uid("fetch", ",".join(uids[start:start + FETCH_BULK]), parts)
+        if typ != "OK":
+            raise RuntimeError(f"the mail server refused to send messages: {data!r}"[:300])
+        # imaplib gives (header, body) tuples, each followed by the rest of its line as bytes
+        item: list = []
+        for piece in data:
+            if isinstance(piece, tuple):
+                if item:
+                    yield MailMessage(item)
+                item = [piece]
+            elif piece is not None and item:
+                item.append(piece)
+        if item:
+            yield MailMessage(item)
 
 
 BLOCK_TAGS = ["p", "div", "tr", "li", "ul", "ol", "table", "section", "article", "header",
@@ -77,7 +100,8 @@ def parse_message(msg: MailMessage) -> dict:
         "body_text": body[:BODY_CHARS],
         "received_at": received.astimezone(timezone.utc).isoformat(),
         "is_read": int("\\Seen" in msg.flags),
-        "has_attachments": int(bool(msg.attachments)),
+        # a cut-off download can miss an attachment that starts late; big mail nearly always has one
+        "has_attachments": int(bool(msg.attachments) or msg.size_rfc822 > MAX_FETCH_BYTES),
         "list_unsubscribe": (headers.get("list-unsubscribe") or ("",))[0] or None,
     }
 
@@ -121,7 +145,7 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
             return 0
         added = 0
         batch: list[dict] = []
-        for msg in mailbox.fetch(uid_list=uids, mark_seen=False, bulk=FETCH_BULK):
+        for msg in fetch_messages(mailbox, uids):
             batch.append(parse_message(msg))
             if len(batch) >= FETCH_BULK:
                 added += db.insert_messages(conn, row["id"], batch)
@@ -137,12 +161,13 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
 
 
 def refresh_bodies(conn, account: config.Account, since_iso: str,
-                   mailbox_factory=connect_mailbox) -> int:
+                   mailbox_factory=connect_mailbox, progress=None) -> int:
     """Re-download the text of mail already saved since `since_iso` (after a parsing fix).
-    Only body_text and snippet change; scores, read state and corrections are kept."""
+    Only body_text and snippet change; scores, read state and corrections are kept.
+    `progress(done, total)` is called after every batch."""
     row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
     uids = [str(r["uid"]) for r in conn.execute(
-        "SELECT uid FROM messages WHERE account_id = ? AND received_at >= ? ORDER BY uid",
+        "SELECT uid FROM messages WHERE account_id = ? AND received_at >= ? ORDER BY uid DESC",
         (row["id"], since_iso))]
     if not uids:
         return 0
@@ -156,14 +181,15 @@ def refresh_bodies(conn, account: config.Account, since_iso: str,
         status = mailbox.folder.status(account.folder, ["UIDVALIDITY"])
         if int(status["UIDVALIDITY"]) != row["uidvalidity"]:
             return 0  # the server renumbered its mail; the next sync re-fetches it anyway
-        for start in range(0, len(uids), FETCH_BULK):
-            for msg in mailbox.fetch(uid_list=uids[start:start + FETCH_BULK], mark_seen=False,
-                                     bulk=FETCH_BULK):
+        for start in range(0, len(uids), FETCH_BULK):  # newest first, one batch per commit
+            for msg in fetch_messages(mailbox, uids[start:start + FETCH_BULK]):
                 m = parse_message(msg)
                 conn.execute("UPDATE messages SET body_text = ?, snippet = ? WHERE account_id = ? AND uid = ?",
                              (m["body_text"], m["snippet"], row["id"], m["uid"]))
                 updated += 1
             conn.commit()
+            if progress:
+                progress(min(start + FETCH_BULK, len(uids)), len(uids))
     return updated
 
 
