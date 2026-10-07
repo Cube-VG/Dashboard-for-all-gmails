@@ -409,7 +409,8 @@
     let html;
     try {
       // opening an email marks it read, like any mail app (⇧U marks it unread again)
-      const res = await fetch(`/message/${encodeURIComponent(id)}?partial=1&mark_read=1&next=${next}`);
+      const res = await fetch(`/message/${encodeURIComponent(id)}?partial=1&mark_read=1&next=${next}`,
+        { headers: { "X-Inbox-Open": "1" } });
       if (!res.ok) throw new Error(String(res.status));
       html = await res.text();
     } catch { location.href = href; return; }

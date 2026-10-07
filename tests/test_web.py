@@ -482,7 +482,10 @@ def test_opening_in_pane_marks_read_but_plain_views_do_not(env):
     env.client.get(f"/message/{mid}?partial=1")           # a refresh of the pane: no change
     env.client.get(f"/?open={mid}")                        # a full-page render: no change
     assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 0
-    r = env.client.get(f"/message/{mid}?partial=1&mark_read=1")  # the user opened it
+    # a link from another site can't send the header, so it can't mark (hide) mail as read
+    env.client.get(f"/message/{mid}?partial=1&mark_read=1")
+    assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 0
+    r = env.client.get(f"/message/{mid}?partial=1&mark_read=1", headers={"X-Inbox-Open": "1"})  # the user opened it
     assert r.status_code == 200
     assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 1
     assert "Mark unread" in r.text
@@ -500,7 +503,7 @@ def test_opening_mail_keeps_its_place_in_the_column(env):
     order = lambda: [r["id"] for r in query(env, "SELECT id FROM messages ORDER BY priority_score DESC, received_at DESC")]
     before = order()
     for mid in before:
-        env.client.get(f"/message/{mid}?partial=1&mark_read=1")
+        env.client.get(f"/message/{mid}?partial=1&mark_read=1", headers={"X-Inbox-Open": "1"})
     assert order() == before
 
 

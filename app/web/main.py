@@ -8,6 +8,7 @@ touches the database at import time):
     uvicorn.run(create_app(on_sync_now=...), host="127.0.0.1", port=8000)
 """
 
+import ipaddress
 import json
 import logging
 import re
@@ -440,7 +441,13 @@ def _client(request: Request) -> str:
     if host in ("127.0.0.1", "::1"):
         fwd = request.headers.get("x-forwarded-for", "")
         if fwd.strip():
-            return fwd.split(",")[-1].strip()[:64]
+            host = fwd.split(",")[-1].strip()[:64]
+    try:  # one IPv6 user owns a whole /64: count it as one client
+        ip = ipaddress.ip_address(host)
+        if ip.version == 6:
+            return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    except ValueError:
+        pass
     return host or "unknown"
 
 
@@ -468,6 +475,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                        static_v=_static_version(), login_on=login_on, totp_on=bool(totp_secret))
     templates = Jinja2Templates(env=env)
     sync_lock = threading.Lock()
+    # one login check at a time: no racing past the lockout or reusing a code in parallel,
+    # and at most one ~16 MB scrypt in memory on a 1 GB VM
+    login_lock = threading.Lock()
 
     def connect():
         return closing(conn_factory())
@@ -489,7 +499,7 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                 and (urlsplit(origin).hostname or "") not in config.ALLOWED_HOSTS):
             return PlainTextResponse("Cross-site request blocked", status_code=403)
         path = request.url.path
-        if login_on and path != "/login" and not path.startswith("/static/"):
+        if login_on and path not in ("/login", "/logout") and not path.startswith("/static/"):
             with connect() as conn:
                 signed_in = auth.session_valid(conn, request.cookies.get(auth.COOKIE))
             if not signed_in:
@@ -540,17 +550,23 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         if not login_on:
             return RedirectResponse(nxt, status_code=303)
         client = _client(request)
-        with connect() as conn:
+        with login_lock, connect() as conn:
             wait = auth.locked_minutes(conn, client)
-            if wait:
-                return login_page(request, nxt, f"Too many wrong attempts. Try again in {wait} "
-                                                f"minute{'s' if wait != 1 else ''}.", 429)
-            ok_pw = auth.verify_password(password or "", password_hash)
+            paused = auth.locked_minutes(conn, auth.CODE_GUARD, auth.MAX_CODE_FAILURES)
+            if wait or paused:
+                left = max(wait, paused)
+                return login_page(request, nxt, f"Too many wrong attempts. Try again in {left} "
+                                                f"minute{'s' if left != 1 else ''}.", 429)
+            ok_pw = auth.verify_password((password or "")[:1024], password_hash)
             counter = None
             if totp_secret:
-                counter = auth.check_totp(totp_secret, code or "", auth.last_totp_counter(conn))
+                counter = auth.check_totp(totp_secret, (code or "")[:32], auth.last_totp_counter(conn))
             if not ok_pw or (totp_secret and counter is None):
                 auth.record_failure(conn, client)
+                if ok_pw:  # someone has the password but not the phone: pause logins for everyone
+                    auth.record_failure(conn, auth.CODE_GUARD)
+                    log.error("correct password but wrong 2-step code from %s: consider "
+                              "changing the password (python -m app.cli set-login)", client)
                 conn.commit()
                 log.warning("failed login from %s", client)
                 what = "password or code" if totp_secret else "password"
@@ -597,7 +613,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
     def message(request: Request, message_id: int, partial: str = "", mark_read: str = "",
                 next_url: Annotated[str, Query(alias="next")] = ""):
         with connect() as conn:
-            if mark_read == "1":  # the user opened it (sent by the pane's JS, not by refreshes)
+            # the user opened it in the pane. The custom header can't be sent by another site's
+            # link or form, so a cross-site GET can't mark (and so hide) mail as read.
+            if mark_read == "1" and partial and request.headers.get("x-inbox-open") == "1":
                 row = conn.execute("SELECT is_read FROM messages WHERE id = ?", (message_id,)).fetchone()
                 if row is not None and not row["is_read"]:
                     db.set_read(conn, message_id, True)

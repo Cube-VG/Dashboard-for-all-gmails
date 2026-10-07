@@ -1,4 +1,5 @@
 import base64
+import threading
 import time
 
 import pytest
@@ -161,3 +162,66 @@ def test_login_off_by_default(tmp_path):
                         follow_redirects=False)
     assert client.get("/").status_code == 200 and "Log out" not in client.get("/").text
     assert client.get("/login").status_code == 303
+
+
+def test_non_ascii_digits_are_a_normal_failure_not_a_crash(site):
+    client, code, _ = site
+    r = login(client, "12345\u00b2")
+    assert r.status_code == 401
+    assert auth.check_totp(RFC_SECRET, "\uff11\uff12\uff13\uff14\uff15\uff16", -1) is None  # full-width digits
+
+
+def test_right_password_wrong_code_pauses_logins_for_everyone(site):
+    client, code, _ = site
+    proxied = TestClient(client.app, follow_redirects=False, client=("127.0.0.1", 50000))
+    for i in range(auth.MAX_CODE_FAILURES):   # attacker knows the password, rotates addresses
+        proxied.post("/login", data={"password": PASSWORD, "code": "000000", "next": "/"},
+                     headers={"X-Forwarded-For": f"10.0.0.{i}"})
+    r = proxied.post("/login", data={"password": PASSWORD, "code": code(), "next": "/"},
+                     headers={"X-Forwarded-For": "10.9.9.9"})
+    assert r.status_code == 429
+
+
+def test_wrong_passwords_from_many_addresses_do_not_pause_the_owner(site):
+    client, code, _ = site
+    proxied = TestClient(client.app, follow_redirects=False, client=("127.0.0.1", 50000))
+    for i in range(30):                        # strangers without the password can't lock you out
+        proxied.post("/login", data={"password": "guess", "code": "000000", "next": "/"},
+                     headers={"X-Forwarded-For": f"10.1.0.{i}"})
+    assert proxied.post("/login", data={"password": PASSWORD, "code": code(), "next": "/"},
+                        headers={"X-Forwarded-For": "10.2.0.1"}).status_code == 303
+
+
+def test_ipv6_addresses_in_one_64_share_a_lockout(site):
+    client, code, _ = site
+    proxied = TestClient(client.app, follow_redirects=False, client=("127.0.0.1", 50000))
+    for i in range(auth.MAX_FAILURES):
+        proxied.post("/login", data={"password": "bad", "code": "1", "next": "/"},
+                     headers={"X-Forwarded-For": f"2001:db8:1:2::{i + 1:x}"})
+    r = proxied.post("/login", data={"password": "bad", "code": "1", "next": "/"},
+                     headers={"X-Forwarded-For": "2001:db8:1:2:ffff::99"})
+    assert r.status_code == 429
+
+
+def test_same_code_in_parallel_makes_only_one_session(site):
+    client, code, path = site
+    ok = code()
+    results = []
+
+    def go():
+        c = TestClient(client.app, follow_redirects=False)
+        results.append(login(c, ok).status_code)
+    threads = [threading.Thread(target=go) for _ in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results).count(303) == 1
+    conn = db.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    conn.close()
+
+
+def test_logout_with_expired_session_just_goes_to_login(site):
+    client, code, _ = site
+    client.cookies.set(auth.COOKIE, "expired-or-made-up")
+    r = client.post("/logout")
+    assert r.status_code == 303 and r.headers["location"] == "/login"

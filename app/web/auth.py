@@ -14,7 +14,9 @@ COOKIE = "inbox_session"
 REMEMBER_DAYS = 30
 SHORT_HOURS = 12            # "don't remember this device": cookie dies with the browser, server after 12h
 MAX_FAILURES = 10           # per client, per window; with 2FA, guessing stays hopeless
+MAX_CODE_FAILURES = 5       # right password, wrong code: from ANY client, then logins pause
 FAIL_WINDOW_MIN = 15
+CODE_GUARD = "*right-password-wrong-code*"  # pseudo-client that counts those across everyone
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 14, 8, 1   # ~16 MB, ~50 ms: fine on a 1 GB VM
 
 
@@ -60,7 +62,7 @@ def totp(secret: str, counter: int) -> str:
 def check_totp(secret: str, code: str, last_counter: int, now: float | None = None) -> int | None:
     """The matching time step (allowing ±30 s of clock drift), or None. A step at or before
     `last_counter` is refused so a code can't be used twice."""
-    code = "".join(ch for ch in (code or "") if ch.isdigit())
+    code = "".join(ch for ch in (code or "") if ch in "0123456789")  # ASCII only ("²" isdigit too)
     if len(code) != 6:
         return None
     current = int((now if now is not None else time.time()) // 30)
@@ -112,14 +114,14 @@ def end_all_sessions(conn) -> int:
     return conn.execute("DELETE FROM sessions").rowcount
 
 
-def locked_minutes(conn, client: str) -> int:
+def locked_minutes(conn, client: str, limit: int = MAX_FAILURES) -> int:
     """Minutes until this client may try again (0 = not locked)."""
     since = (_now() - timedelta(minutes=FAIL_WINDOW_MIN)).isoformat()
     rows = conn.execute("SELECT at FROM login_failures WHERE client = ? AND at > ? ORDER BY at",
                         (client, since)).fetchall()
-    if len(rows) < MAX_FAILURES:
+    if len(rows) < limit:
         return 0
-    oldest = datetime.fromisoformat(rows[-MAX_FAILURES]["at"])
+    oldest = datetime.fromisoformat(rows[-limit]["at"])
     left = oldest + timedelta(minutes=FAIL_WINDOW_MIN) - _now()
     return max(1, int(left.total_seconds() // 60) + 1)
 
