@@ -1,0 +1,5 @@
+.env
+accounts.yaml
+*.db
+__pycache__/
+.venv/
