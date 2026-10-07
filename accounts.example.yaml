@@ -1,0 +1,25 @@
+# Copy to accounts.yaml (never committed) and list every mailbox.
+# Passwords are NOT stored here. Save each one once with:
+#   python -m app.cli set-password you@gmail.com
+#
+# Gmail: use an App Password (Google Account -> Security -> 2-Step Verification
+# -> App passwords), and make sure IMAP is on in Gmail settings.
+# Hosting (cPanel, Hostinger, ...): copy the IMAP host from your hosting panel.
+
+accounts:
+  - label: Personal Gmail
+    email: you@gmail.com
+    imap_host: imap.gmail.com
+    color: "#d93025"
+
+  - label: Work Gmail
+    email: you.work@gmail.com
+    imap_host: imap.gmail.com
+    color: "#1a73e8"
+
+  - label: Business (hosting)
+    email: info@yourdomain.com
+    imap_host: mail.yourdomain.com
+    imap_port: 993          # optional, 993 is the default
+    folder: INBOX           # optional, INBOX is the default
+    color: "#188038"

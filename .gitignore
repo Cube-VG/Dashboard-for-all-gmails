@@ -3,3 +3,4 @@ accounts.yaml
 *.db
 __pycache__/
 .venv/
+data/

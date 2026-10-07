@@ -53,7 +53,7 @@ hundred characters) of the emails that pass the rules filter are sent to OpenRou
 | Language | Python 3.11+ | Best email + AI libraries, easy to learn |
 | Mail fetching | `imap-tools` (IMAP) | Same code works for Gmail **and** every hosting provider |
 | Database | SQLite | One file, zero setup |
-| AI model | Gemma via **OpenRouter** (OpenAI-compatible API) | You already have it; use the free `:free` Gemma variant, fall back to the paid one (fractions of a cent) |
+| AI model | Gemma via **OpenRouter** (OpenAI-compatible API) | You already have it; `google/gemma-4-26b-a4b-it:free`, falling back to the paid `google/gemma-4-26b-a4b-it` (fractions of a cent) |
 | Backend | FastAPI | Small, fast, simple API for the UI |
 | UI | HTML + HTMX (or Streamlit for a quick first prototype) | Opens in a browser at `http://localhost:8000` |
 | Desktop window (optional) | `pywebview` | Makes it feel like an app instead of a browser tab, free |
