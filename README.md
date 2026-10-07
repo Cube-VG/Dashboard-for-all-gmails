@@ -6,28 +6,45 @@ Gemma (via OpenRouter). Runs on your own computer; the only possible cost is Ope
 
 ![Dashboard](docs/screenshot.png)
 
-## Setup (once)
+## Setup on a Mac (once)
 
-1. Install Python 3.11 or newer, then in this folder:
+Open **Terminal** (Cmd+Space, type "Terminal").
+
+1. Get Python 3.11+ (macOS's built-in `python3` is 3.9, which is too old):
    ```
-   python -m venv .venv
-   .venv\Scripts\activate          # Windows   (macOS/Linux: source .venv/bin/activate)
+   brew install python@3.14
+   python3.14 --version
+   ```
+2. Download the code and create the environment **with python3.14**:
+   ```
+   cd ~/Documents
+   git clone https://github.com/cube-vg/dashboard-for-all-gmails.git
+   cd dashboard-for-all-gmails
+   git checkout claude/dreamy-wright-isuy3u
+   python3.14 -m venv .venv
+   source .venv/bin/activate
+   python --version              # must say 3.14.x
    pip install -r requirements.txt
    ```
-2. Copy `.env.example` → `.env` and paste your OpenRouter key.
-3. Copy `accounts.example.yaml` → `accounts.yaml` and list your mailboxes.
+   Inside `(.venv)`, plain `python` and `pip` are 3.14. Run `source .venv/bin/activate`
+   in every new Terminal window.
+3. Add your OpenRouter key: `cp .env.example .env && open -e .env`
+4. List your mailboxes: `cp accounts.example.yaml accounts.yaml && open -e accounts.yaml`
    - **Gmail:** turn on 2-Step Verification, create an *App Password*
      (Google Account → Security → App passwords) and make sure IMAP is enabled.
    - **Hosting mailboxes:** host is usually `mail.yourdomain.com`, port 993.
-4. Save each password once (stored in your OS keyring, not in any file):
+5. Save each password once (stored in your Mac's Keychain; click **Always Allow** if asked):
    ```
    python -m app.cli set-password you@gmail.com
    ```
-5. Check everything connects:
+6. Check everything connects:
    ```
    python -m app.cli check      # logs in to every account
    python -m app.cli test-ai    # your OpenRouter key reaches Gemma
    ```
+
+On Windows/Linux the steps are the same with `python -m venv .venv` and the
+matching activate command.
 
 ## Run the dashboard
 
@@ -35,7 +52,9 @@ Gemma (via OpenRouter). Runs on your own computer; the only possible cost is Ope
 python -m app
 ```
 
-Opens http://127.0.0.1:8000 in your browser. While it runs it checks mail every
+Opens http://127.0.0.1:8000 in your browser. Next time: `cd ~/Documents/dashboard-for-all-gmails && source .venv/bin/activate && python -m app`.
+
+On a Mac, if pop-ups don't appear, allow notifications for **Script Editor** in System Settings → Notifications. While it runs it checks mail every
 5 minutes, sorts new mail, and shows a desktop pop-up for very important new mail.
 
 | Option | What it does |
