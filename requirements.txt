@@ -5,3 +5,11 @@ python-dotenv>=1.0
 PyYAML>=6.0
 beautifulsoup4>=4.12
 pytest>=8
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+python-multipart>=0.0.9
+apscheduler>=3.10,<4
+httpx>=0.27
+# optional: native desktop window instead of a browser tab
+# pywebview>=5
