@@ -9,6 +9,9 @@
     python -m app.cli test-ai                       check your OpenRouter key + Gemma
     python -m app.cli prune [--days 14]             delete saved mail older than N days
     python -m app.cli refresh-bodies [--days 14]    re-download email text (keeps scores)
+    python -m app.cli set-login                     turn on the login (password + authenticator code)
+    python -m app.cli logout-all                    sign out every device
+    python -m app.cli unlock-login                  clear the wrong-password lockout
 """
 
 import argparse
@@ -104,6 +107,54 @@ def cmd_refresh_bodies(args):
                 print(f"\r{a.email:<35} error: {exc}")
 
 
+def cmd_set_login(args):
+    from app.web import auth
+
+    pw = getpass.getpass("New dashboard password (at least 10 characters): ")
+    if len(pw) < 10:
+        raise SystemExit("Too short: use at least 10 characters (a few random words works well).")
+    if getpass.getpass("Type it again: ") != pw:
+        raise SystemExit("The two passwords didn't match. Nothing was changed.")
+    secret = ""
+    if not args.no_2fa:
+        secret = auth.new_totp_secret()
+        grouped = " ".join(secret[i:i + 4] for i in range(0, len(secret), 4))
+        print("\nAdd this to your authenticator app (iPhone: Settings → Passwords → + → "
+              "or Google Authenticator → + → Enter a setup key):\n")
+        print(f"    Name:  Unified Inbox\n    Key:   {grouped}\n    Type:  time-based, 6 digits\n")
+        print(f"(Or open this link on the phone: {auth.otpauth_uri(secret)})\n")
+        for _ in range(3):
+            if auth.check_totp(secret, input("Type the 6-digit code the app shows now: "), -1) is not None:
+                break
+            print("That code doesn't match. Check the key was typed exactly, then try the next code.")
+        else:
+            raise SystemExit("Codes didn't match three times. Nothing was changed; run set-login again.")
+    config._write_env("DASHBOARD_PASSWORD_HASH", auth.hash_password(pw))
+    config._write_env("DASHBOARD_TOTP_SECRET", secret)
+    with db.connect() as conn:
+        n = auth.end_all_sessions(conn)
+        conn.commit()
+    print(f"\nLogin is on{' with 2-step codes' if secret else ' (password only)'}. "
+          f"{n} old session(s) signed out.\nRestart the app to apply it "
+          "(on the VM: sudo systemctl restart inbox).")
+
+
+def cmd_logout_all(args):
+    from app.web import auth
+
+    with db.connect() as conn:
+        n = auth.end_all_sessions(conn)
+        conn.commit()
+    print(f"Signed out {n} session(s) on every device.")
+
+
+def cmd_unlock_login(args):
+    with db.connect() as conn:
+        n = conn.execute("DELETE FROM login_failures").rowcount
+        conn.commit()
+    print(f"Lockout cleared ({n} failed attempts forgotten).")
+
+
 def cmd_test_ai(args):
     from openai import OpenAI
 
@@ -150,6 +201,12 @@ def main():
     s = sub.add_parser("refresh-bodies", help="re-download email text for saved mail (keeps scores)")
     s.add_argument("--days", type=int, default=config.SYNC_DAYS_BACK)
     s.set_defaults(func=cmd_refresh_bodies)
+
+    s = sub.add_parser("set-login", help="turn on the dashboard login (password + authenticator code)")
+    s.add_argument("--no-2fa", action="store_true", help="password only (not recommended if public)")
+    s.set_defaults(func=cmd_set_login)
+    sub.add_parser("logout-all", help="sign out every device").set_defaults(func=cmd_logout_all)
+    sub.add_parser("unlock-login", help="clear the wrong-password lockout").set_defaults(func=cmd_unlock_login)
 
     args = p.parse_args()
     args.func(args)

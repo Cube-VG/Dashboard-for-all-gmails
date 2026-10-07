@@ -100,3 +100,39 @@ The app starts by itself when the VM boots and restarts itself if it ever crashe
   if you want them.
 - **Staying free:** 1 VM, `e2-micro`, a US region, a *standard* disk ≤ 30 GB, and under 1 GB of outbound
   traffic a month. The dashboard over Tailscale uses a few MB. Downloading email doesn't count.
+
+---
+
+## Optional: sign in from any device (public login)
+
+With only Tailscale, the dashboard opens just on your own devices, which is the safest setup.
+If you also want to open it from computers where you can't install Tailscale, turn on the login
+and make it public. Anyone can then *see* the sign-in page, so it's protected by:
+
+- **a password** (stored only as a scrypt hash)
+- **a 6-digit code** from an authenticator app (Apple Passwords, Google Authenticator), so a stolen
+  password alone isn't enough
+- **a lockout** after 10 wrong tries in 15 minutes
+- **sessions** that end after 12 hours, or 30 days if you tick "keep me signed in"
+- **no caching** of pages, so a shared computer's Back button can't show your mail
+
+In the VM's SSH window:
+
+```
+cd ~/dashboard-for-all-gmails
+.venv/bin/python -m app.cli set-login     # choose a password, add the code to your authenticator app
+sudo systemctl restart inbox
+bash deploy/go-public.sh                  # refuses unless the login is on; prints the public address
+```
+
+Undo it with `bash deploy/go-private.sh`, which makes it Tailscale-only again.
+
+| If… | Run (on the VM) |
+|---|---|
+| you lose your phone or think someone got in | `.venv/bin/python -m app.cli logout-all`, then `set-login` again |
+| you locked yourself out with wrong tries | `.venv/bin/python -m app.cli unlock-login` |
+| you want to change the password | `.venv/bin/python -m app.cli set-login` (signs out every device) |
+
+**On shared or public computers:**
+- Leave "keep me signed in" unticked.
+- Use ⋯ → **Log out** when you're done.

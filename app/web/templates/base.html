@@ -38,6 +38,11 @@
       <div class="menu glass thick" id="more-menu">
         <a class="menu-item" href="/rules"{% if page == 'rules' %} aria-current="page"{% endif %}><svg class="ic" aria-hidden="true"><use href="#i-star"/></svg><span>Sender rules</span></a>
         <button type="button" class="menu-item keys-item" popovertarget="keys"><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard shortcuts</span><kbd>?</kbd></button>
+        {% if login_on %}
+        <form method="post" action="/logout" class="logout-form">
+          <button class="menu-item" type="submit"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><span>Log out</span></button>
+        </form>
+        {% endif %}
         <div class="menu-prefs" data-prefs hidden>
           <hr class="menu-sep">
           <fieldset class="seg-radio theme-pick">

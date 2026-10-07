@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     calls INTEGER NOT NULL DEFAULT 0
 );
 
+-- optional login (app/web/auth.py): sessions, failed attempts, last authenticator step used
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    user_agent TEXT
+);
+CREATE TABLE IF NOT EXISTS login_failures (
+    client TEXT NOT NULL,
+    at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS auth_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_unscored ON messages(scored_by) WHERE scored_by IS NULL;
 """

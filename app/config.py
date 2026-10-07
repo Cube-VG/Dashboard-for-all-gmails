@@ -62,6 +62,11 @@ ALLOWED_HOSTS = [h.strip().lower() for h in os.getenv("ALLOWED_HOSTS", "").split
 
 ENV_FILE = ROOT / ".env"
 
+# Optional login for the dashboard (set with: python -m app.cli set-login). Empty = no login,
+# which is fine while only you can reach it (your Mac, or Tailscale).
+DASHBOARD_PASSWORD_HASH = os.getenv("DASHBOARD_PASSWORD_HASH", "").strip()
+DASHBOARD_TOTP_SECRET = os.getenv("DASHBOARD_TOTP_SECRET", "").strip()
+
 
 def _env_key(email: str) -> str:
     return "IMAP_PASSWORD_" + "".join(c if c.isalnum() else "_" for c in email).upper()

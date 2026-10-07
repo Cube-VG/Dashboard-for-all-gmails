@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#e8ebe6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e0f0c" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in · Unified Inbox</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script src="/static/prefs.js?v={{ static_v }}"></script>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
+</head>
+<body class="error-page login-page">
+<main id="content">
+  <form class="login-card" method="post" action="/login">
+    <div class="login-brand"><img src="/static/favicon.svg" alt="" width="40" height="40"><span>Unified Inbox</span></div>
+    <h1 class="title">Sign in</h1>
+    {% if error %}<p class="field-error" role="alert" id="login-error">{{ error }}</p>{% endif %}
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="field">Password
+      <input type="password" name="password" required autocomplete="current-password" autofocus{% if error %} aria-invalid="true" aria-describedby="login-error"{% endif %}>
+    </label>
+    {% if totp_on %}
+    <label class="field">6-digit code from your authenticator app
+      <input type="text" name="code" required inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code" placeholder="123 456">
+    </label>
+    {% endif %}
+    <label class="login-remember"><input type="checkbox" name="remember" value="1"> Keep me signed in on this device for 30 days</label>
+    <button class="btn btn-primary login-submit" type="submit">Sign in</button>
+    <p class="login-note">On a shared or public computer, leave "keep me signed in" off and use ⋯ → Log out when you're done.</p>
+  </form>
+</main>
+</body>
+</html>

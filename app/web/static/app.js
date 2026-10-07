@@ -240,10 +240,16 @@
   }
 
   // --- network helpers ---------------------------------------------------------------------
+  // signed out (session expired or logged out elsewhere): go to the login page, then come back
+  function toLogin() {
+    location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+  }
+
   async function post(url, data) {
     const body = data instanceof URLSearchParams ? data : new URLSearchParams(data);
     try {
       const res = await fetch(url, { method: "POST", body, headers: { Accept: "application/json" } });
+      if (res.status === 401) { toLogin(); return { ok: false, status: 401, message: "Please sign in again", data: {} }; }
       const json = await res.json().catch(() => ({}));
       const ok = res.ok && json.ok !== false;
       const message = json.message || (typeof json.detail === "string" ? json.detail : "") || (ok ? "Done" : `Failed (${res.status})`);
@@ -299,6 +305,7 @@
   }
   async function doRefresh({ moved = null, focusSubject = false, swapPane = false } = {}) {
     const res = await fetch(location.href, { headers: { Accept: "text/html" }, cache: "no-store" });
+    if (res.status === 401 || (res.redirected && new URL(res.url).pathname === "/login")) { toLogin(); return false; }
     if (!res.ok) throw new Error("HTTP " + res.status);
     const doc = new DOMParser().parseFromString(await res.text(), "text/html");
     document.title = doc.title;
@@ -1015,7 +1022,9 @@
   async function pollStats() {
     let s;
     try {
-      s = await (await fetch("/api/stats", { headers: { Accept: "application/json" }, cache: "no-store" })).json();
+      const res = await fetch("/api/stats", { headers: { Accept: "application/json" }, cache: "no-store" });
+      if (res.status === 401) { toLogin(); return; }
+      s = await res.json();
     } catch { schedulePoll(120000); return; }
     applyStats(s);
     schedulePoll(syncing ? 3000 : s.unscored > 0 && document.visibilityState === "visible" ? 15000 : 120000);

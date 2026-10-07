@@ -31,6 +31,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import config, db
 from app.ai.scoring import QUADRANTS, quadrant
+from app.web import auth
 
 log = logging.getLogger(__name__)
 
@@ -253,7 +254,9 @@ def _rule_pattern(raw: str | None) -> str | None:
 
 def _safe_next(url: str | None, default: str = "/") -> str:
     """Only redirect within this site."""
-    if url and url.startswith("/") and not url.startswith("//") and "\\" not in url:
+    # browsers drop tabs/newlines, so "/\t/evil.com" would become "//evil.com": refuse them all
+    if (url and url.startswith("/") and not url.startswith("//") and "\\" not in url
+            and not any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in url)):
         return url
     return default
 
@@ -430,18 +433,39 @@ def _static_version() -> str:
 
 # --- the app --------------------------------------------------------------------------
 
+def _client(request: Request) -> str:
+    """Who is trying to log in: behind a local proxy (tailscale serve/funnel) the last
+    X-Forwarded-For entry is the one the proxy added; otherwise the socket address."""
+    host = request.client.host if request.client else ""
+    if host in ("127.0.0.1", "::1"):
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd.strip():
+            return fwd.split(",")[-1].strip()[:64]
+    return host or "unknown"
+
+
+def _secure_cookie(request: Request) -> bool:
+    host = (request.headers.get("host") or "").split(":")[0]
+    return (request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+            or bool(config.ALLOWED_HOSTS) or host not in ("127.0.0.1", "localhost", "testserver"))
+
+
 def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
-               on_sync_now: Callable[[], dict] | None = None) -> FastAPI:
+               on_sync_now: Callable[[], dict] | None = None,
+               password_hash: str | None = None, totp_secret: str | None = None) -> FastAPI:
     """conn_factory() opens a new SQLite connection (one per request, closed afterwards).
     on_sync_now() runs a sync + AI pass and returns a dict of results for the status line;
     without it the Sync button just says sync is not available."""
+    password_hash = config.DASHBOARD_PASSWORD_HASH if password_hash is None else password_hash
+    totp_secret = config.DASHBOARD_TOTP_SECRET if totp_secret is None else totp_secret
+    login_on = bool(password_hash)
     app = FastAPI(title="Unified Inbox", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)  # no DNS rebinding
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(HERE / "templates"), autoescape=True)
     env.globals.update(QUADRANTS=QUADRANTS, ACTIONS=ACTIONS, RULE_KINDS=RULE_KINDS,
-                       static_v=_static_version())
+                       static_v=_static_version(), login_on=login_on, totp_on=bool(totp_secret))
     templates = Jinja2Templates(env=env)
     sync_lock = threading.Lock()
 
@@ -464,7 +488,21 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                 # behind `tailscale serve` the Host may be rewritten; trust only configured names
                 and (urlsplit(origin).hostname or "") not in config.ALLOWED_HOSTS):
             return PlainTextResponse("Cross-site request blocked", status_code=403)
+        path = request.url.path
+        if login_on and path != "/login" and not path.startswith("/static/"):
+            with connect() as conn:
+                signed_in = auth.session_valid(conn, request.cookies.get(auth.COOKIE))
+            if not signed_in:
+                if request.method in ("GET", "HEAD") and not _wants_json(request) \
+                        and "partial" not in request.query_params:
+                    target = path + (f"?{request.url.query}" if request.url.query else "")
+                    return RedirectResponse("/login?" + urlencode({"next": target}), status_code=303)
+                return JSONResponse({"ok": False, "message": "Please sign in again", "login": "/login"},
+                                    status_code=401)
         resp = await call_next(request)
+        if not path.startswith("/static/"):
+            # nothing with email in it is kept by the browser (back button on a shared computer)
+            resp.headers.setdefault("Cache-Control", "no-store")
         resp.headers.setdefault("Content-Security-Policy", CSP)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         # same-origin, not no-referrer: under no-referrer browsers send `Origin: null` with
@@ -479,6 +517,64 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                 request, "error.html", {"status": exc.status_code, "detail": exc.detail},
                 status_code=exc.status_code)
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    # --- login (only when DASHBOARD_PASSWORD_HASH is set) ----------------------------------
+    def login_page(request: Request, nxt: str, error: str = "", status: int = 200):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"next": nxt, "error": error}, status_code=status)
+
+    @app.get("/login")
+    def login_form(request: Request, next_url: Annotated[str, Query(alias="next")] = "/"):
+        nxt = _safe_next(next_url)
+        if not login_on:
+            return RedirectResponse(nxt, status_code=303)
+        with connect() as conn:
+            if auth.session_valid(conn, request.cookies.get(auth.COOKIE)):
+                return RedirectResponse(nxt, status_code=303)
+        return login_page(request, nxt)
+
+    @app.post("/login")
+    def login(request: Request, password: FormStr = None, code: FormStr = None,
+              remember: FormStr = None, next_url: NextField = None):
+        nxt = _safe_next(next_url)
+        if not login_on:
+            return RedirectResponse(nxt, status_code=303)
+        client = _client(request)
+        with connect() as conn:
+            wait = auth.locked_minutes(conn, client)
+            if wait:
+                return login_page(request, nxt, f"Too many wrong attempts. Try again in {wait} "
+                                                f"minute{'s' if wait != 1 else ''}.", 429)
+            ok_pw = auth.verify_password(password or "", password_hash)
+            counter = None
+            if totp_secret:
+                counter = auth.check_totp(totp_secret, code or "", auth.last_totp_counter(conn))
+            if not ok_pw or (totp_secret and counter is None):
+                auth.record_failure(conn, client)
+                conn.commit()
+                log.warning("failed login from %s", client)
+                what = "password or code" if totp_secret else "password"
+                return login_page(request, nxt, f"That {what} isn't right.", 401)
+            auth.clear_failures(conn, client)
+            if counter is not None:
+                auth.save_totp_counter(conn, counter)
+            token, _ = auth.create_session(conn, bool(remember),
+                                           request.headers.get("user-agent", ""))
+            conn.commit()
+        resp = RedirectResponse(nxt, status_code=303)
+        resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax", path="/",
+                        secure=_secure_cookie(request),
+                        max_age=auth.REMEMBER_DAYS * 86400 if remember else None)
+        return resp
+
+    @app.post("/logout")
+    def logout(request: Request):
+        with connect() as conn:
+            auth.end_session(conn, request.cookies.get(auth.COOKIE))
+            conn.commit()
+        resp = RedirectResponse("/login" if login_on else "/", status_code=303)
+        resp.delete_cookie(auth.COOKIE, path="/")
+        return resp
 
     @app.get("/")
     def index(request: Request):
