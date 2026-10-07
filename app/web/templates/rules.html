@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Rules{% endblock %}
+{% block content %}
+{% set help = {
+  "vip": "Mail from these senders is always treated as important.",
+  "low": "Mail from these senders is always treated as low priority.",
+  "private": "Mail from these senders is never sent to the AI. Rules score it instead.",
+} %}
+<div class="page">
+  <h1>Sender rules</h1>
+  <p class="muted">Rules run before the AI, cost nothing, and apply to newly synced mail. A pattern is a full address (<code>boss@company.com</code>) or a whole domain (<code>@company.com</code>).</p>
+
+  <form class="rule-add" method="post" action="/rules" data-enhance>
+    <input type="hidden" name="next" value="/rules">
+    <label>Rule
+      <select name="kind">{% for k, label in RULE_KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label class="grow">Sender or domain
+      <input name="pattern" required placeholder="boss@company.com or @bank.com" autocomplete="off">
+    </label>
+    <button class="btn primary">Add rule</button>
+  </form>
+
+  {% for kind, label in RULE_KINDS.items() %}
+  <section class="rule-group rule-{{ kind }}">
+    <h2>{{ label }} <span class="count">{{ rules[kind]|length }}</span></h2>
+    <p class="hint">{{ help[kind] }}</p>
+    {% if rules[kind] %}
+    <ul class="rules">
+      {% for r in rules[kind] %}
+      <li>
+        <span class="pattern">{{ r.pattern }}</span>
+        <span class="muted">{{ r.matches }} email{{ "" if r.matches == 1 else "s" }} · added {{ r.created_at[:10] }}</span>
+        <form method="post" action="/rules/{{ r.id }}/delete" data-enhance>
+          <input type="hidden" name="next" value="/rules">
+          <button class="btn ghost danger" aria-label="Delete rule {{ r.pattern }}">Delete</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">None yet.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

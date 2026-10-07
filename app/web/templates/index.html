@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ "List" if f.view == "list" else "Matrix" }}{% endblock %}
+{% block content %}
+{% import "_macros.html" as ui with context %}
+<div class="layout{% if msg %} with-pane{% endif %}" id="layout">
+  <div class="board" id="board">
+  {% if not stats.total %}
+    <div class="empty-state">
+      <svg class="ic xl"><use href="#i-mail"/></svg>
+      <h2>No email yet</h2>
+      <p>Press <b>Sync now</b> (or run <code>python -m app.cli sync</code>) to fetch mail from your accounts.</p>
+    </div>
+  {% elif not total %}
+    <div class="empty-state">
+      <svg class="ic xl"><use href="#i-search"/></svg>
+      <h2>Nothing matches</h2>
+      <p>No emails match these filters. <a href="{{ f.url(account='', q='', unread='', category='') }}">Clear filters</a></p>
+    </div>
+  {% elif f.view == "list" %}
+    <section class="list" data-col="list">
+      <div class="list-head">
+        <h2>All email by priority</h2>
+        <span class="count">{% if total > cards|length %}{{ cards|length }} of {% endif %}{{ total }}</span>
+      </div>
+      <div class="cards">
+        {% for m in cards %}{{ ui.card(m, show_quad=True) }}{% endfor %}
+      </div>
+      {% if total > cards|length %}<p class="more">Showing the top {{ cards|length }}. Search or filter to see the rest.</p>{% endif %}
+    </section>
+  {% else %}
+    {% if unsorted.total %}
+    <section class="group q-none" data-col="unsorted">
+      <details open data-key="unsorted">
+        <summary class="col-head">
+          <span class="mark"></span>
+          <span class="titles"><h2>Not sorted yet</h2><span class="sub">Waiting for the AI</span></span>
+          <span class="count">{{ unsorted.total }}</span>
+        </summary>
+        <div class="cards grid">
+          {% for m in unsorted.cards %}{{ ui.card(m) }}{% endfor %}
+        </div>
+        {{ ui.more(unsorted) }}
+      </details>
+    </section>
+    {% endif %}
+    <div class="matrix">
+      {% for col in columns %}
+      <section class="col q-{{ col.key }}" data-col="{{ col.key }}">
+        <details{% if col.key != "later" %} open{% endif %} data-key="{{ col.key }}">
+          <summary class="col-head">
+            <span class="mark"></span>
+            <span class="titles"><h2>{{ col.title }}</h2><span class="sub">{{ col.action }}</span></span>
+            <span class="count">{{ col.total }}</span>
+          </summary>
+          <div class="cards">
+            {% for m in col.cards %}{{ ui.card(m) }}{% else %}<p class="empty">Nothing here.</p>{% endfor %}
+          </div>
+          {{ ui.more(col) }}
+        </details>
+      </section>
+      {% endfor %}
+    </div>
+  {% endif %}
+  </div>
+  <aside class="pane" id="pane" aria-label="Selected email">{% if msg %}{% include "_detail.html" %}{% endif %}</aside>
+</div>
+{% endblock %}

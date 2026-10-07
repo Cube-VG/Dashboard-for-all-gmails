@@ -1,0 +1,35 @@
+{% macro card(m, show_quad=False) %}
+<article class="card{% if not m.is_read %} unread{% endif %}{% if m.id == open_id %} active{% endif %}" data-id="{{ m.id }}">
+  <a class="card-link" href="{{ f.url(open=m.id) }}" data-open="{{ m.id }}">
+    <div class="card-top">
+      <span class="acct" title="{{ m.account_email }}"><i class="dot" style="--c: {{ m.color }}"></i>{{ m.account_label }}</span>
+      {% if m.has_attachments %}<svg class="ic sm" role="img" aria-label="Has attachments"><title>Has attachments</title><use href="#i-clip"/></svg>{% endif %}
+      <time datetime="{{ m.received_at }}" title="{{ m.when_full }}">{{ m.when }}</time>
+    </div>
+    <div class="sender">{% if not m.is_read %}<span class="sr-only">Unread: </span>{% endif %}{{ m.sender }}</div>
+    <div class="subject">{{ m.subject or "(no subject)" }}</div>
+    {% if m.summary or m.snippet %}<p class="summary{% if not m.summary %} snippet{% endif %}">{{ m.summary or m.snippet }}</p>{% endif %}
+  </a>
+  {% if show_quad or m.category or m.due or m.scored_by %}
+  <div class="card-meta">
+    {% if show_quad %}
+    <span class="chip quad q-{{ m.quad or 'none' }}">{{ ACTIONS[m.quad] if m.quad else "Not sorted" }}</span>
+    {% if m.priority_score is not none %}<span class="chip score" title="Priority score">{{ "%.1f"|format(m.priority_score) }}</span>{% endif %}
+    {% endif %}
+    {% if m.category %}<span class="chip cat">{{ m.category }}</span>{% endif %}
+    {% if m.due %}<span class="chip due {{ m.due.cls }}">{{ m.due.text }}</span>{% endif %}
+    {% if m.action_needed and m.scored_by %}<span class="chip act">action</span>{% endif %}
+    {% if m.scored_by %}
+    <details class="why">
+      <summary title="{{ m.reason or 'No reason given' }} (scored by {{ m.scored_by_label }})">why?</summary>
+      <p>{{ m.reason or "No reason given." }} <span class="by">· scored by {{ m.scored_by_label }}</span></p>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+</article>
+{% endmacro %}
+
+{% macro more(group) %}
+{% if group.total > group.cards|length %}<p class="more">Showing {{ group.cards|length }} of {{ group.total }}. Search or filter to narrow it down.</p>{% endif %}
+{% endmacro %}

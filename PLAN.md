@@ -181,7 +181,7 @@ needed.
 
 ---
 
-## 7. Build phases
+## 7. Build phases (all built — see README.md to run it)
 
 | Phase | What you build | Done when |
 |---|---|---|
@@ -200,7 +200,8 @@ needed.
 ```
 dashboard-for-all-gmails/
 ├── app/
-│   ├── main.py           # FastAPI app + routes
+│   ├── __main__.py       # `python -m app`: dashboard + background sync
+│   ├── web/              # FastAPI dashboard (main.py, templates/, static/)
 │   ├── config.py         # settings, account list loader
 │   ├── db.py             # SQLite setup + queries
 │   ├── sync/
@@ -209,8 +210,9 @@ dashboard-for-all-gmails/
 │   │   ├── rules.py      # cheap pre-filters
 │   │   ├── classifier.py # Gemma via OpenRouter (batched)
 │   │   └── prompt.py     # prompt template + few-shot builder
-│   ├── scheduler.py      # runs sync + classify every N minutes
-│   └── templates/        # HTML (HTMX) pages
+│   ├── runner.py         # one sync + sort + notify cycle
+│   ├── scheduler.py      # runs the cycle every N minutes
+│   └── notify.py         # desktop pop-ups
 ├── accounts.example.yaml # account list WITHOUT passwords
 ├── requirements.txt
 └── PLAN.md

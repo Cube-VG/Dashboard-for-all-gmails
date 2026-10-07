@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.subject or "(no subject)" }}{% endblock %}
+{% block content %}
+<div class="page detail-page">{% include "_detail.html" %}</div>
+{% endblock %}

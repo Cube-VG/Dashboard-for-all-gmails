@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% if stats and stats.unread_do %}({{ stats.unread_do }}) {% endif %}{% block title %}Inbox{% endblock %} · Unified Inbox</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
+  <script src="/static/app.js?v={{ static_v }}" defer></script>
+</head>
+<body>
+{% include "_icons.html" %}
+<header class="top">
+  <div class="bar">
+    <a class="brand" href="/"><svg class="ic lg"><use href="#i-inbox"/></svg><span>Unified Inbox</span></a>
+    <nav class="tabs" aria-label="View">
+      <a href="{{ f.url(view='matrix') }}"{% if page == 'matrix' %} aria-current="page"{% endif %}>Matrix</a>
+      <a href="{{ f.url(view='list') }}"{% if page == 'list' %} aria-current="page"{% endif %}>List</a>
+    </nav>
+    <form id="filters" class="search" method="get" action="/" role="search">
+      {% if f.view == 'list' %}<input type="hidden" name="view" value="list">{% endif %}
+      {% if f.account %}<input type="hidden" name="account" value="{{ f.account }}">{% endif %}
+      <svg class="ic"><use href="#i-search"/></svg>
+      <input type="search" name="q" value="{{ f.q }}" placeholder="Search sender, subject, text…" aria-label="Search email">
+    </form>
+    <div class="actions">
+      <form method="post" action="/sync" data-enhance>
+        <input type="hidden" name="next" value="{{ here }}">
+        <button class="btn" data-busy="Syncing…" title="Fetch new mail and sort it now"><svg class="ic spin"><use href="#i-sync"/></svg><span>Sync now</span></button>
+      </form>
+      <a class="btn ghost" href="/rules"{% if page == 'rules' %} aria-current="page"{% endif %}>Rules</a>
+    </div>
+  </div>
+  <div class="filterbar" id="filterbar">
+    <nav class="chips" aria-label="Accounts">
+      <a class="chip-link{% if not f.account %} on{% endif %}" href="{{ f.url(account='') }}">All accounts</a>
+      {% for c in chips %}
+      <a class="chip-link{% if f.account == c.email %} on{% endif %}" style="--c: {{ c.color }}" href="{{ f.url(account=c.email) }}" title="{{ c.email }}"><i class="dot"></i>{{ c.label }}{% if c.unread %}<span class="n" title="unread">{{ c.unread }}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+    <div class="filter-controls">
+      <label class="toggle"><input type="checkbox" name="unread" value="1" form="filters" data-autosubmit{% if f.unread %} checked{% endif %}> Unread only</label>
+      <select name="category" form="filters" data-autosubmit aria-label="Category">
+        <option value="">All categories</option>
+        {% for c in categories %}<option value="{{ c }}"{% if c == f.category %} selected{% endif %}>{{ c }}</option>{% endfor %}
+        {% if f.category and f.category not in categories %}<option value="{{ f.category }}" selected>{{ f.category }}</option>{% endif %}
+      </select>
+      <noscript><button class="btn" form="filters">Apply</button></noscript>
+      {% if f.active %}<a class="clear" href="{{ f.url(account='', q='', unread='', category='') }}">Clear filters</a>{% endif %}
+    </div>
+  </div>
+</header>
+<div class="status" id="status">
+  {% for a in accounts %}
+  <span class="acct-status{% if a.last_error %} err{% endif %}" title="{{ a.email }} · {{ a.folder }} · last sync: {{ a.synced_full }}{% if a.last_error %} · error: {{ a.last_error }}{% endif %}">
+    <i class="dot" style="--c: {{ a.color }}"></i><b>{{ a.label }}</b>
+    {% if a.last_error %}error: {{ a.last_error|truncate(80) }}{% elif a.synced_ago %}synced {{ a.synced_ago }}{% else %}not synced yet{% endif %}
+  </span>
+  {% else %}
+  <span>No accounts yet: list them in accounts.yaml, then run <code>python -m app.cli sync</code>.</span>
+  {% endfor %}
+  <span class="ai-usage{% if ai_calls >= ai_max %} err{% endif %}" title="AI requests sent to OpenRouter today (UTC) / daily cap MAX_AI_CALLS_PER_DAY">AI calls today: {{ ai_calls }} / {{ ai_max }}</span>
+</div>
+<div id="flash" class="flash-box" aria-live="polite">{% if flash %}<p class="flash {{ flash.kind }}" role="status">{{ flash.text }}</p>{% endif %}</div>
+<main id="content">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

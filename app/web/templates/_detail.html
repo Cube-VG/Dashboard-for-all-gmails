@@ -1,0 +1,100 @@
+<article class="detail q-{{ msg.quad or 'none' }}" data-message="{{ msg.id }}">
+  <div class="detail-bar">
+    {% if standalone %}
+    <a class="btn ghost" href="/"><svg class="ic"><use href="#i-back"/></svg>Inbox</a>
+    {% else %}
+    <a class="btn ghost icon" href="{{ close_url }}" data-close title="Close (Esc)" aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></a>
+    {% endif %}
+    <span class="spacer"></span>
+    <form method="post" action="/message/{{ msg.id }}/read" data-enhance>
+      <input type="hidden" name="is_read" value="{{ 0 if msg.is_read else 1 }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <button class="btn">{{ "Mark unread" if msg.is_read else "Mark read" }}</button>
+    </form>
+    {% if msg.gmail_url %}
+    <a class="btn primary" href="{{ msg.gmail_url }}" target="_blank" rel="noopener noreferrer">Open in Gmail<svg class="ic"><use href="#i-ext"/></svg></a>
+    {% endif %}
+  </div>
+
+  <h2 class="detail-subject">{{ msg.subject or "(no subject)" }}</h2>
+  <dl class="headers">
+    <dt>From</dt><dd>{% if msg.from_name %}<b>{{ msg.from_name }}</b> {% endif %}<span class="addr">&lt;{{ msg.from_email }}&gt;</span></dd>
+    {% if msg.to_email %}<dt>To</dt><dd>{{ msg.to_email }}</dd>{% endif %}
+    <dt>Date</dt><dd><time datetime="{{ msg.received_at }}">{{ msg.when_full }}</time></dd>
+    <dt>Account</dt><dd><i class="dot" style="--c: {{ msg.color }}"></i>{{ msg.account_label }} <span class="addr">{{ msg.account_email }}</span></dd>
+    {% if msg.has_attachments %}<dt>Files</dt><dd><svg class="ic sm"><use href="#i-clip"/></svg> Has attachments (open the email in Gmail or webmail to see them)</dd>{% endif %}
+  </dl>
+
+  <section class="ai-box">
+    <div class="ai-head">
+      {% if msg.quad %}
+      <span class="chip quad q-{{ msg.quad }}">{{ QUADRANTS[msg.quad] }}</span>
+      <span class="scores">Importance <b>{{ msg.importance }}</b>/5 · Urgency <b>{{ msg.urgency }}</b>/5{% if msg.priority_score is not none %} · Priority <b>{{ "%.1f"|format(msg.priority_score) }}</b>{% endif %}</span>
+      {% else %}
+      <span class="chip quad q-none">Not sorted yet</span>
+      {% endif %}
+    </div>
+    {% if msg.category or msg.due or msg.action_needed %}
+    <div class="chips-row">
+      {% if msg.category %}<span class="chip cat">{{ msg.category }}</span>{% endif %}
+      {% if msg.due %}<span class="chip due {{ msg.due.cls }}">{{ msg.due.text }}</span>{% endif %}
+      {% if msg.action_needed and msg.scored_by %}<span class="chip act">action needed</span>{% endif %}
+    </div>
+    {% endif %}
+    {% if msg.summary %}<p class="ai-summary">{{ msg.summary }}</p>{% endif %}
+    {% if msg.scored_by %}<p class="ai-reason"><b>Why:</b> {{ msg.reason or "No reason given." }} <span class="by">· scored by {{ msg.scored_by_label }}</span></p>{% endif %}
+
+    <form class="moves" method="post" action="/message/{{ msg.id }}/score" data-enhance>
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <span class="label">Move to</span>
+      {% for key, label in ACTIONS.items() %}
+      <button class="move q-{{ key }}{% if msg.quad == key %} current{% endif %}" name="move" value="{{ key }}" title="{{ QUADRANTS[key] }}"{% if msg.quad == key %} aria-pressed="true"{% endif %}>{{ label }}</button>
+      {% endfor %}
+    </form>
+  </section>
+
+  <div class="body-text">{{ msg.body_text or msg.snippet or "(empty message)" }}</div>
+
+  <details class="panel">
+    <summary>Fine-tune the score</summary>
+    <form class="fine" method="post" action="/message/{{ msg.id }}/score" data-enhance>
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label>Importance
+        <select name="importance">{% for i in range(1, 6) %}<option{% if msg.importance == i %} selected{% endif %}>{{ i }}</option>{% endfor %}</select>
+      </label>
+      <label>Urgency
+        <select name="urgency">{% for i in range(1, 6) %}<option{% if msg.urgency == i %} selected{% endif %}>{{ i }}</option>{% endfor %}</select>
+      </label>
+      <label>Category
+        <input name="category" list="category-list" value="{{ msg.category or '' }}" maxlength="30" placeholder="e.g. client">
+      </label>
+      <datalist id="category-list">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
+      <button class="btn primary">Save</button>
+    </form>
+    <p class="hint">4–5 counts as high. Your corrections are shown to the AI as examples for future mail.</p>
+  </details>
+
+  {% if msg.from_email %}
+  <details class="panel"{% if msg.rules %} open{% endif %}>
+    <summary>Rules for this sender</summary>
+    {% if msg.rules %}
+    <p class="active-rules">Active: {% for r in msg.rules %}<span class="chip rule-{{ r.kind }}">{{ RULE_KINDS[r.kind] }} · {{ r.pattern }}</span> {% endfor %}</p>
+    {% endif %}
+    <form class="rule-form" method="post" action="/rules" data-enhance>
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label>Apply to
+        <select name="pattern">
+          <option value="{{ msg.from_email|lower }}">This sender ({{ msg.from_email|lower }})</option>
+          {% if msg.domain %}<option value="@{{ msg.domain }}">Whole domain (@{{ msg.domain }})</option>{% endif %}
+        </select>
+      </label>
+      <div class="rule-buttons">
+        <button class="btn" name="kind" value="vip">Always important (VIP)</button>
+        <button class="btn" name="kind" value="low">Always low priority</button>
+        <button class="btn" name="kind" value="private">Private — never send to AI</button>
+      </div>
+    </form>
+    <p class="hint">Rules apply to new mail. Manage them on the <a href="/rules">Rules</a> page.</p>
+  </details>
+  {% endif %}
+</article>
