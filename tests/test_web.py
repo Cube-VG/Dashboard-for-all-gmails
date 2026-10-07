@@ -492,4 +492,5 @@ def test_theme_picker_and_early_theme_script_on_every_page(env):
     home = env.client.get("/").text
     assert 'name="theme" value="auto"' in home and 'value="light"' in home and 'value="dark"' in home
     for page in ("/", "/rules", "/message/999999"):
-        assert '<script src="/static/prefs.js' in env.client.get(page).text  # applies the saved theme before paint
+        r = env.client.get(page, headers={"Accept": "text/html"})  # browsers get the HTML error page
+        assert '<script src="/static/prefs.js' in r.text  # applies the saved theme before paint
