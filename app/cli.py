@@ -7,6 +7,7 @@
     python -m app.cli run-once                      sync + sort + notify, once
     python -m app.cli list [--account EMAIL] [-n 30] show the newest saved mail
     python -m app.cli test-ai                       check your OpenRouter key + Gemma
+    python -m app.cli prune [--days 14]             delete saved mail older than N days
 """
 
 import argparse
@@ -69,6 +70,19 @@ def cmd_list(args):
             print(f"{dot} {score}  {m['received_at'][:16]}  {m['account_label'][:14]:<14}  {sender:<24}  {m['subject'][:60]}")
 
 
+def cmd_prune(args):
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    with db.connect() as conn:
+        removed = db.prune_old_messages(conn, cutoff)
+        conn.commit()
+        conn.execute("VACUUM")
+        left = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    print(f"Removed {removed} emails older than {args.days} days; {left} left. "
+          "Older mail is never downloaded again.")
+
+
 def cmd_test_ai(args):
     from openai import OpenAI
 
@@ -107,6 +121,10 @@ def main():
     s.set_defaults(func=cmd_list)
 
     sub.add_parser("test-ai", help="check OpenRouter + Gemma").set_defaults(func=cmd_test_ai)
+
+    s = sub.add_parser("prune", help="delete saved mail older than N days (stop the app first)")
+    s.add_argument("--days", type=int, default=config.SYNC_DAYS_BACK)
+    s.set_defaults(func=cmd_prune)
 
     args = p.parse_args()
     args.func(args)

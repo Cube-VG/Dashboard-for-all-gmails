@@ -36,8 +36,13 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
 def parse_message(msg: MailMessage) -> dict:
     body = msg.text or (html_to_text(msg.html) if msg.html else "")
+    if HTML_TAG_RE.search(body):  # some senders put HTML in the plain-text part
+        body = html_to_text(body)
     body = clean_text(body)
     received = msg.date
     if received.tzinfo is None:
@@ -91,6 +96,11 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
             last_uid = 0
 
         uids = _new_uids(mailbox, last_uid)
+        if not uids:
+            # imap-tools treats an empty uid_list as "no filter" and would fetch the whole mailbox
+            db.mark_synced(conn, row["id"], last_uid)
+            conn.commit()
+            return 0
         added = 0
         batch: list[dict] = []
         for msg in mailbox.fetch(uid_list=uids, mark_seen=False, bulk=FETCH_BULK):

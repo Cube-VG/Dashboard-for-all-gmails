@@ -74,6 +74,8 @@ class FakeMailBox:
 
     def fetch(self, uid_list, mark_seen, bulk):
         assert mark_seen is False
+        if not uid_list:  # like imap-tools: an empty uid_list means "search ALL"
+            uid_list = [str(u) for u in self.server.messages]
         self.server.fetched.extend(uid_list)
         return [self.server.messages[int(u)] for u in uid_list]
 
@@ -105,6 +107,24 @@ def test_first_sync_then_only_new_mail(conn):
     server.add(12, subject="Third")
     assert run(conn, server) == 1
     assert [m["subject"] for m in db.recent_messages(conn, 10)].count("Third") == 1
+
+
+def test_no_new_mail_fetches_nothing(conn):
+    server = FakeServer()
+    for uid in range(1, 6):
+        server.add(uid, subject=f"Mail {uid}")
+    run(conn, server)
+    server.fetched.clear()
+    for _ in range(3):
+        assert run(conn, server) == 0
+    assert server.fetched == []
+
+
+def test_html_in_plain_text_part_is_stripped(conn):
+    server = FakeServer()
+    server.add(1, subject="Bill", text='Your bill is <span style="color:#c45500;"><b>due</b></span> today')
+    run(conn, server)
+    assert db.recent_messages(conn, 1)[0]["snippet"] == "Your bill is due today"
 
 
 def test_parses_fields(conn):
@@ -143,3 +163,18 @@ def test_one_bad_account_does_not_stop_others(conn, monkeypatch):
     results = imap_sync.sync_all(conn, [bad, ACCOUNT], mailbox_factory=factory)
     assert results["bad@example.com"].startswith("error")
     assert results["me@example.com"] == 1
+
+
+def test_prune_keeps_recent_and_corrected_mail(conn):
+    row = db.upsert_account(conn, "me@example.com", "INBOX", "Test", "#000")
+    base = dict(message_id=None, from_name="", from_email="a@b.c", to_email="", snippet="",
+                body_text="", is_read=0, has_attachments=0, list_unsubscribe=None)
+    db.insert_messages(conn, row["id"], [
+        {**base, "uid": 1, "subject": "old", "received_at": "2026-01-01T00:00:00+00:00"},
+        {**base, "uid": 2, "subject": "old but corrected", "received_at": "2026-01-02T00:00:00+00:00"},
+        {**base, "uid": 3, "subject": "new", "received_at": "2026-10-06T00:00:00+00:00"},
+    ])
+    corrected = conn.execute("SELECT id FROM messages WHERE uid = 2").fetchone()["id"]
+    db.record_feedback(conn, corrected, 5, 5)
+    assert db.prune_old_messages(conn, "2026-09-23T00:00:00+00:00") == 1
+    assert sorted(m["subject"] for m in db.recent_messages(conn, 10)) == ["new", "old but corrected"]

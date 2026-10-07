@@ -238,3 +238,13 @@ def count_ai_call(conn, day: str) -> None:
         "INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1",
         (day,),
     )
+
+
+def prune_old_messages(conn, before_iso: str) -> int:
+    """Delete mail received before `before_iso`, keeping anything you corrected yourself."""
+    cur = conn.execute(
+        """DELETE FROM messages WHERE received_at < ? AND COALESCE(scored_by, '') != 'user'
+           AND id NOT IN (SELECT message_id FROM feedback)""",
+        (before_iso,),
+    )
+    return cur.rowcount
