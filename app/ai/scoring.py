@@ -30,8 +30,7 @@ def priority_score(importance, urgency, deadline=None, action_needed=False, is_r
         score += 1.0
     if action_needed:
         score += 0.5
-    if is_read:
-        score -= 0.5
+    # is_read is ignored on purpose: reading an email must never move it (like any mail app)
     return round(score, 2)
 
 

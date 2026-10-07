@@ -93,7 +93,18 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")  # web page can read while a sync writes
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """One-time fixes for databases made by older versions (tracked in PRAGMA user_version)."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < 1:  # read mail used to lose 0.5 priority, which made opened emails jump down
+        conn.execute("UPDATE messages SET priority_score = priority_score + 0.5 "
+                     "WHERE is_read = 1 AND priority_score IS NOT NULL")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
 
 
 def upsert_account(conn, email: str, folder: str, label: str, color: str) -> sqlite3.Row:

@@ -232,7 +232,7 @@ def test_read_toggle(env):
     r = env.client.post(f"/message/{mid}/read", data={"is_read": "1", "next": f"/message/{mid}"})
     assert r.status_code == 200 and "Marked as read" in r.text and "Mark unread" in r.text
     row = query(env, "SELECT is_read, priority_score FROM messages WHERE id = ?", mid)[0]
-    assert tuple(row) == (1, 5.5)  # read costs 0.5 priority
+    assert tuple(row) == (1, 6.0)  # reading never changes priority, so the card doesn't move
     assert "<title>Contract" in r.text  # no unread "do" left, no badge
     r = env.client.post(f"/message/{mid}/read", headers=JSON)  # no value: toggle
     assert r.json()["is_read"] is False
@@ -494,3 +494,27 @@ def test_theme_picker_and_early_theme_script_on_every_page(env):
     for page in ("/", "/rules", "/message/999999"):
         r = env.client.get(page, headers={"Accept": "text/html"})  # browsers get the HTML error page
         assert '<script src="/static/prefs.js' in r.text  # applies the saved theme before paint
+
+
+def test_opening_mail_keeps_its_place_in_the_column(env):
+    order = lambda: [r["id"] for r in query(env, "SELECT id FROM messages ORDER BY priority_score DESC, received_at DESC")]
+    before = order()
+    for mid in before:
+        env.client.get(f"/message/{mid}?partial=1&mark_read=1")
+    assert order() == before
+
+
+def test_old_databases_get_read_penalty_removed_once(tmp_path):
+    path = tmp_path / "old.db"
+    conn = db.connect(path)
+    acc = db.upsert_account(conn, "a@b.c", "INBOX", "A", "#000")["id"]
+    db.insert_messages(conn, acc, [dict(uid=1, message_id=None, from_name="", from_email="x@y.z", to_email="",
+                                        subject="s", snippet="", body_text="", received_at="2026-10-01T00:00:00+00:00",
+                                        is_read=1, has_attachments=0, list_unsubscribe=None)])
+    conn.execute("UPDATE messages SET priority_score = 4.5")   # as an old version stored it
+    conn.execute("PRAGMA user_version = 0")
+    conn.commit(); conn.close()
+    for _ in range(2):  # the fix applies exactly once
+        conn = db.connect(path)
+        assert conn.execute("SELECT priority_score FROM messages").fetchone()[0] == 5.0
+        conn.close()

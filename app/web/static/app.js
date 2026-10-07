@@ -428,16 +428,36 @@
     syncModal();
     // phone: the sheet covers the board, so a tap (or VoiceOver double-tap) moves focus in too
     if (focus || phone.matches) $(".detail-subject", pane)?.focus({ preventScroll: true });
-    if (wasUnread) refresh().catch(() => {}); // "N new" counts and the unread line
+    if (wasUnread) pollStats(); // title, headline and dock; the board itself is left alone
   }
 
-  // the server marked it read when the pane loaded; show that on the card at once
+  // The server marked it read when the pane loaded. Like any mail app, the card only loses its
+  // unread styling and stays exactly where it is: no re-render, no jump, even under "Unread".
   function showAsRead(id) {
     const card = $(`.card[data-id="${esc(id)}"]`);
     if (!card || card.dataset.read === "1") return false;
     card.classList.remove("unread");
     card.dataset.read = "1";
     $(".sender .sr-only", card)?.remove();
+    lastHTML.content = null; // the next real refresh must redraw
+    const count = card.closest(".col")?.querySelector(".col-head .count");
+    if (count) {
+      const shown = count.querySelector('[aria-hidden="true"]');
+      const b = shown?.querySelector("b");
+      const n = b ? parseInt(b.textContent, 10) - 1 : 0;
+      const total = shown ? shown.textContent.split("·").pop().trim() : "";
+      if (shown) shown.innerHTML = (n > 0 ? `<b>${n} new</b> · ` : "") + total;
+      const sr = count.querySelector(".sr-only");
+      if (sr) sr.textContent = `${Math.max(n, 0)} unread of ${total}`;
+    }
+    const line = $(".status-line > span");
+    if (line) line.textContent = line.textContent.replace(/^(\d+)(?= unread)/, (m) => String(Math.max(0, +m - 1)));
+    const email = $(".acct", card)?.getAttribute("title");
+    const chipN = email && $$(".chips .chip-link").find((a) => a.getAttribute("title") === email)?.querySelector(".n");
+    if (chipN?.firstChild) {
+      const left = parseInt(chipN.firstChild.textContent, 10) - 1;
+      if (left > 0) chipN.firstChild.textContent = String(left); else chipN.remove();
+    }
     return true;
   }
 
