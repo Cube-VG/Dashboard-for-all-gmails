@@ -178,3 +178,34 @@ def test_prune_keeps_recent_and_corrected_mail(conn):
     db.record_feedback(conn, corrected, 5, 5)
     assert db.prune_old_messages(conn, "2026-09-23T00:00:00+00:00") == 1
     assert sorted(m["subject"] for m in db.recent_messages(conn, 10)) == ["new", "old but corrected"]
+
+
+def test_body_keeps_paragraphs_and_snippet_is_one_line(conn):
+    server = FakeServer()
+    server.add(1, subject="Statement", text="Dear Customer,\r\n\r\nYour   statement is ready.\r\nPassword: PAN\r\n\r\n\r\n\r\nThanks")
+    run(conn, server)
+    m = db.recent_messages(conn, 1)[0]
+    assert m["body_text"] == "Dear Customer,\n\nYour statement is ready.\nPassword: PAN\n\nThanks"
+    assert m["snippet"] == "Dear Customer, Your statement is ready. Password: PAN Thanks"
+
+
+def test_html_blocks_become_lines_but_inline_tags_do_not():
+    text = imap_sync.clean_text(imap_sync.html_to_text(
+        "<html><head><title>x</title></head><body><p>Hello <b>Jane</b>,\n  welcome</p>"
+        "<div>Line two<br>Line three</div><table><tr><td>A</td></tr><tr><td>B</td></tr></table></body></html>"))
+    assert text == "Hello Jane, welcome\n\nLine two\nLine three\n\nA\n\nB"
+
+
+def test_refresh_bodies_rewrites_text_only(conn):
+    server = FakeServer()
+    server.add(1, subject="Hi", text="old text")
+    run(conn, server)
+    mid = conn.execute("SELECT id FROM messages").fetchone()["id"]
+    db.record_feedback(conn, mid, 5, 5)
+    db.set_read(conn, mid, True)
+    server.messages = {}
+    server.add(1, subject="Hi", text="Line one\n\nLine two")
+    n = imap_sync.refresh_bodies(conn, ACCOUNT, "2000-01-01", mailbox_factory=lambda h, p: FakeMailBox(server))
+    m = db.recent_messages(conn, 1)[0]
+    assert n == 1 and m["body_text"] == "Line one\n\nLine two"
+    assert (m["importance"], m["urgency"], m["scored_by"], m["is_read"]) == (5, 5, "user", 1)

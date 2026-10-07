@@ -25,14 +25,32 @@ def connect_mailbox(host: str, port: int) -> MailBox:
     return MailBox(host, port, timeout=IMAP_TIMEOUT)
 
 
+BLOCK_TAGS = ["p", "div", "tr", "li", "ul", "ol", "table", "section", "article", "header",
+              "footer", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "hr"]
+
+
 def html_to_text(html: str) -> str:
+    """Readable plain text from HTML: inline tags join up, blocks and <br> become line breaks."""
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "head"]):
+    for tag in soup(["script", "style", "head", "title"]):
         tag.decompose()
-    return soup.get_text(" ")
+    for node in soup.find_all(string=True):  # whitespace inside HTML source is not a line break
+        node.replace_with(re.sub(r"\s+", " ", node))
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for tag in soup.find_all(BLOCK_TAGS):
+        tag.insert_before("\n")
+        tag.insert_after("\n")
+    return soup.get_text()
 
 
 def clean_text(text: str) -> str:
+    """Tidy spacing but keep the line breaks and paragraphs people need to read an email."""
+    lines = [re.sub(r"[ \t\u00a0]+", " ", line).strip() for line in text.replace("\r\n", "\n").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def one_line(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -55,7 +73,7 @@ def parse_message(msg: MailMessage) -> dict:
         "from_email": (msg.from_values.email if msg.from_values else msg.from_).lower(),
         "to_email": ", ".join(msg.to),
         "subject": msg.subject or "(no subject)",
-        "snippet": body[:SNIPPET_CHARS],
+        "snippet": one_line(body)[:SNIPPET_CHARS],
         "body_text": body[:BODY_CHARS],
         "received_at": received.astimezone(timezone.utc).isoformat(),
         "is_read": int("\\Seen" in msg.flags),
@@ -116,6 +134,37 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
         db.mark_synced(conn, row["id"], last_uid)
         conn.commit()
         return added
+
+
+def refresh_bodies(conn, account: config.Account, since_iso: str,
+                   mailbox_factory=connect_mailbox) -> int:
+    """Re-download the text of mail already saved since `since_iso` (after a parsing fix).
+    Only body_text and snippet change; scores, read state and corrections are kept."""
+    row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
+    uids = [str(r["uid"]) for r in conn.execute(
+        "SELECT uid FROM messages WHERE account_id = ? AND received_at >= ? ORDER BY uid",
+        (row["id"], since_iso))]
+    if not uids:
+        return 0
+    password = config.get_password(account.email)
+    if not password:
+        raise RuntimeError(f"No password saved for {account.email}")
+    updated = 0
+    with mailbox_factory(account.imap_host, account.imap_port).login(
+        account.username, password, initial_folder=account.folder
+    ) as mailbox:
+        status = mailbox.folder.status(account.folder, ["UIDVALIDITY"])
+        if int(status["UIDVALIDITY"]) != row["uidvalidity"]:
+            return 0  # the server renumbered its mail; the next sync re-fetches it anyway
+        for start in range(0, len(uids), FETCH_BULK):
+            for msg in mailbox.fetch(uid_list=uids[start:start + FETCH_BULK], mark_seen=False,
+                                     bulk=FETCH_BULK):
+                m = parse_message(msg)
+                conn.execute("UPDATE messages SET body_text = ?, snippet = ? WHERE account_id = ? AND uid = ?",
+                             (m["body_text"], m["snippet"], row["id"], m["uid"]))
+                updated += 1
+            conn.commit()
+    return updated
 
 
 def sync_all(conn, accounts: list[config.Account], mailbox_factory=connect_mailbox) -> dict[str, int | str]:

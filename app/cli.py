@@ -8,6 +8,7 @@
     python -m app.cli list [--account EMAIL] [-n 30] show the newest saved mail
     python -m app.cli test-ai                       check your OpenRouter key + Gemma
     python -m app.cli prune [--days 14]             delete saved mail older than N days
+    python -m app.cli refresh-bodies [--days 14]    re-download email text (keeps scores)
 """
 
 import argparse
@@ -83,6 +84,21 @@ def cmd_prune(args):
           "Older mail is never downloaded again.")
 
 
+def cmd_refresh_bodies(args):
+    from datetime import datetime, timedelta, timezone
+
+    from app.sync.imap_sync import refresh_bodies
+
+    since = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    with db.connect() as conn:
+        for a in config.load_accounts():
+            try:
+                print(f"{a.email:<35} {refresh_bodies(conn, a, since)} emails refreshed")
+            except Exception as exc:  # noqa: BLE001
+                conn.rollback()
+                print(f"{a.email:<35} error: {exc}")
+
+
 def cmd_test_ai(args):
     from openai import OpenAI
 
@@ -125,6 +141,10 @@ def main():
     s = sub.add_parser("prune", help="delete saved mail older than N days (stop the app first)")
     s.add_argument("--days", type=int, default=config.SYNC_DAYS_BACK)
     s.set_defaults(func=cmd_prune)
+
+    s = sub.add_parser("refresh-bodies", help="re-download email text for saved mail (keeps scores)")
+    s.add_argument("--days", type=int, default=config.SYNC_DAYS_BACK)
+    s.set_defaults(func=cmd_refresh_bodies)
 
     args = p.parse_args()
     args.func(args)

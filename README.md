@@ -87,6 +87,8 @@ python -m app.cli sync       # fetch new mail
 python -m app.cli classify   # sort unscored mail
 python -m app.cli run-once   # sync + sort + notify once
 python -m app.cli list       # newest mail from all accounts, with priority scores
+python -m app.cli prune      # delete saved mail older than 14 days (stop the app first)
+python -m app.cli refresh-bodies   # re-download email text for saved mail (keeps scores)
 ```
 
 ## Settings (`.env`)

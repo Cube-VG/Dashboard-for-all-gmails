@@ -496,9 +496,14 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         return render(request, "index.html", ctx)
 
     @app.get("/message/{message_id}")
-    def message(request: Request, message_id: int, partial: str = "",
+    def message(request: Request, message_id: int, partial: str = "", mark_read: str = "",
                 next_url: Annotated[str, Query(alias="next")] = ""):
         with connect() as conn:
+            if mark_read == "1":  # the user opened it (sent by the pane's JS, not by refreshes)
+                row = conn.execute("SELECT is_read FROM messages WHERE id = ?", (message_id,)).fetchone()
+                if row is not None and not row["is_read"]:
+                    db.set_read(conn, message_id, True)
+                    conn.commit()
             msg = _detail(conn, message_id)
             if msg is None:
                 raise HTTPException(404, "Message not found")

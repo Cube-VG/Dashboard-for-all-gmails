@@ -386,7 +386,8 @@
     const next = encodeURIComponent(url.pathname + url.search);
     let html;
     try {
-      const res = await fetch(`/message/${encodeURIComponent(id)}?partial=1&next=${next}`);
+      // opening an email marks it read, like any mail app (⇧U marks it unread again)
+      const res = await fetch(`/message/${encodeURIComponent(id)}?partial=1&mark_read=1&next=${next}`);
       if (!res.ok) throw new Error(String(res.status));
       html = await res.text();
     } catch { location.href = href; return; }
@@ -406,11 +407,23 @@
       setTimeout(() => layout.classList.remove("pane-enter"), 500);
     }
     markActive(id);
+    const wasUnread = showAsRead(id);
     setupNav();
     if (push) history.pushState(null, "", url);
     syncModal();
     // phone: the sheet covers the board, so a tap (or VoiceOver double-tap) moves focus in too
     if (focus || phone.matches) $(".detail-subject", pane)?.focus({ preventScroll: true });
+    if (wasUnread) refresh().catch(() => {}); // "N new" counts and the unread line
+  }
+
+  // the server marked it read when the pane loaded; show that on the card at once
+  function showAsRead(id) {
+    const card = $(`.card[data-id="${esc(id)}"]`);
+    if (!card || card.dataset.read === "1") return false;
+    card.classList.remove("unread");
+    card.dataset.read = "1";
+    $(".sender .sr-only", card)?.remove();
+    return true;
   }
 
   function closePane(href, { push = true, focusBack = true } = {}) {

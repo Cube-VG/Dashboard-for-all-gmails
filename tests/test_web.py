@@ -474,3 +474,15 @@ def test_problem_banner_is_short_and_empty_inbox_has_one_primary(env, tmp_path):
     empty = tmp_path / "empty.db"
     client = TestClient(create_app(conn_factory=lambda: db.connect(empty)))
     assert client.get("/").text.count("btn-primary") == 1  # the empty state's Sync now
+
+
+def test_opening_in_pane_marks_read_but_plain_views_do_not(env):
+    unread = [r["id"] for r in query(env, "SELECT id FROM messages WHERE is_read = 0")]
+    mid = unread[0]
+    env.client.get(f"/message/{mid}?partial=1")           # a refresh of the pane: no change
+    env.client.get(f"/?open={mid}")                        # a full-page render: no change
+    assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 0
+    r = env.client.get(f"/message/{mid}?partial=1&mark_read=1")  # the user opened it
+    assert r.status_code == 200
+    assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 1
+    assert "Mark unread" in r.text
