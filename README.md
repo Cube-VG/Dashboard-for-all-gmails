@@ -69,6 +69,8 @@ In the dashboard:
 - Click a card for the full email, the AI's reason ("why?") and an **Open in Gmail** link.
 - **Move to** buttons or *Fine-tune the score* correct the AI; your corrections are shown
   to Gemma as examples next time, so it learns your taste.
+- **Light / Dark:** ⋯ menu → Appearance → Auto (follow your Mac), Light or Dark. Your choice
+  is remembered, even after restarting the app.
 - *Rules for this sender*: **VIP** (always important), **Always low**, or
   **Private** (never sent to the AI). Manage them all under **Rules**.
 

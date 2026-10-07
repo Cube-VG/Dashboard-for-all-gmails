@@ -40,6 +40,12 @@
         <button type="button" class="menu-item keys-item" popovertarget="keys"><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard shortcuts</span><kbd>?</kbd></button>
         <div class="menu-prefs" data-prefs hidden>
           <hr class="menu-sep">
+          <fieldset class="seg-radio theme-pick">
+            <legend>Appearance</legend>
+            <label title="Follow your Mac's setting"><input type="radio" name="theme" value="auto"><span>Auto</span></label>
+            <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+            <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+          </fieldset>
           <button type="button" class="menu-item switch" role="switch" aria-checked="false" data-pref="density"><span>Compact rows</span><i class="knob" aria-hidden="true"></i></button>
           <button type="button" class="menu-item switch" role="switch" aria-checked="false" data-pref="glass"><span>Solid surfaces (less transparency)</span><i class="knob" aria-hidden="true"></i></button>
           <button type="button" class="menu-item switch" role="switch" aria-checked="true" data-pref="advance"><span>Open next email after an action</span><i class="knob" aria-hidden="true"></i></button>

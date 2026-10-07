@@ -486,3 +486,10 @@ def test_opening_in_pane_marks_read_but_plain_views_do_not(env):
     assert r.status_code == 200
     assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 1
     assert "Mark unread" in r.text
+
+
+def test_theme_picker_and_early_theme_script_on_every_page(env):
+    home = env.client.get("/").text
+    assert 'name="theme" value="auto"' in home and 'value="light"' in home and 'value="dark"' in home
+    for page in ("/", "/rules", "/message/999999"):
+        assert '<script src="/static/prefs.js' in env.client.get(page).text  # applies the saved theme before paint

@@ -37,8 +37,23 @@
     keys: { get: () => root.dataset.keys !== "off",
       set: (on) => { if (on) delete root.dataset.keys; else root.dataset.keys = "off"; store.set("pref:keys", on ? "on" : "off"); } },
   };
+  // Appearance: Auto follows macOS; Light / Dark stick (saved, applied before paint by prefs.js)
+  const currentTheme = () => (root.dataset.theme === "light" || root.dataset.theme === "dark" ? root.dataset.theme : "auto");
+  function setTheme(theme) {
+    if (theme === "auto") delete root.dataset.theme; else root.dataset.theme = theme;
+    store.set("pref:theme", theme);
+    $$('meta[name="theme-color"]').forEach((m) => {
+      const dark = theme === "auto" ? (m.getAttribute("media") || "").includes("dark") : theme === "dark";
+      m.setAttribute("content", dark ? "#0e0f0c" : "#e8ebe6");
+    });
+    $('meta[name="color-scheme"]')?.setAttribute("content", theme === "auto" ? "light dark" : theme);
+  }
+  document.addEventListener("change", (e) => {
+    if (e.target.matches?.('input[name="theme"]')) setTheme(e.target.value);
+  });
   function syncSwitches() {
     $$("[data-prefs]").forEach((el) => { el.hidden = false; });
+    $$('input[name="theme"]').forEach((i) => { i.checked = i.value === currentTheme(); });
     $$("[data-pref]").forEach((b) => {
       const s = SWITCHES[b.dataset.pref];
       if (s) b.setAttribute("aria-checked", String(s.get()));
