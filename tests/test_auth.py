@@ -179,7 +179,11 @@ def test_right_password_wrong_code_pauses_logins_for_everyone(site):
                      headers={"X-Forwarded-For": f"10.0.0.{i}"})
     r = proxied.post("/login", data={"password": PASSWORD, "code": code(), "next": "/"},
                      headers={"X-Forwarded-For": "10.9.9.9"})
-    assert r.status_code == 429
+    wrong = proxied.post("/login", data={"password": "not it", "code": "000000", "next": "/"},
+                         headers={"X-Forwarded-For": "10.9.9.8"})
+    # refused, and indistinguishable from a wrong password (no "your guess was right" signal)
+    assert r.status_code == wrong.status_code == 401 and "set-cookie" not in r.headers
+    assert r.text.replace("10.9.9.9", "") == wrong.text.replace("10.9.9.8", "")
 
 
 def test_wrong_passwords_from_many_addresses_do_not_pause_the_owner(site):
@@ -225,3 +229,29 @@ def test_logout_with_expired_session_just_goes_to_login(site):
     client.cookies.set(auth.COOKIE, "expired-or-made-up")
     r = client.post("/logout")
     assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+def test_oversized_login_post_is_refused_before_parsing(site):
+    client, code, _ = site
+    r = client.post("/login", data={"password": "x" * 20000, "code": "1", "next": "/"})
+    assert r.status_code == 413
+    assert login(client, code()).status_code == 303   # a normal form still works
+
+
+def test_ipv4_mapped_clients_are_not_lumped_together(site):
+    client, code, _ = site
+    proxied = TestClient(client.app, follow_redirects=False, client=("127.0.0.1", 50000))
+    for _ in range(auth.MAX_FAILURES):
+        proxied.post("/login", data={"password": "bad", "code": "1", "next": "/"},
+                     headers={"X-Forwarded-For": "::ffff:6.6.6.6"})
+    ok = proxied.post("/login", data={"password": PASSWORD, "code": code(), "next": "/"},
+                      headers={"X-Forwarded-For": "::ffff:1.2.3.4"})
+    assert ok.status_code == 303
+
+
+def test_dotenv_values_are_taken_literally(tmp_path):
+    from dotenv import dotenv_values
+    from app import config
+    env = tmp_path / ".env"
+    config._write_env("IMAP_PASSWORD_X", "pa${HOME}ss$1", path=env)
+    assert dotenv_values(env, interpolate=False)["IMAP_PASSWORD_X"] == "pa${HOME}ss$1"

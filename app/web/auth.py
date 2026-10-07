@@ -5,9 +5,11 @@ and a lockout after repeated failures. Off unless DASHBOARD_PASSWORD_HASH is set
 import base64
 import hashlib
 import hmac
+import math
 import secrets
 import struct
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 COOKIE = "inbox_session"
@@ -22,9 +24,17 @@ SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 14, 8, 1   # ~16 MB, ~50 ms: fine on a 1 GB 
 
 # --- password hashing ---------------------------------------------------------------------
 
+# Every hash runs on this one thread: each thread's allocator keeps its 16 MB scrypt buffer, so
+# hashing on many web threads would let a login flood pin most of a 1 GB VM's memory.
+_SCRYPT = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scrypt")
+
+
+def _scrypt(password: bytes, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return _SCRYPT.submit(hashlib.scrypt, password, salt=salt, n=n, r=r, p=p).result()
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
+    digest = _scrypt(password.encode(), salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)
     b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
     return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${b64(salt)}${b64(digest)}"
 
@@ -34,8 +44,7 @@ def verify_password(password: str, stored: str) -> bool:
         kind, n, r, p, salt, digest = stored.split("$")
         if kind != "scrypt":
             return False
-        got = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt),
-                             n=int(n), r=int(r), p=int(p))
+        got = _scrypt(password.encode(), base64.b64decode(salt), int(n), int(r), int(p))
         return hmac.compare_digest(got, base64.b64decode(digest))
     except (ValueError, TypeError):
         return False
@@ -123,7 +132,7 @@ def locked_minutes(conn, client: str, limit: int = MAX_FAILURES) -> int:
         return 0
     oldest = datetime.fromisoformat(rows[-limit]["at"])
     left = oldest + timedelta(minutes=FAIL_WINDOW_MIN) - _now()
-    return max(1, int(left.total_seconds() // 60) + 1)
+    return max(1, math.ceil(left.total_seconds() / 60))
 
 
 def record_failure(conn, client: str) -> None:

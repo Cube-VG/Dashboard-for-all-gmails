@@ -1,7 +1,8 @@
 # Run it 24/7 on a free cloud VM
 
 **Setup:** Google Cloud's *Always Free* `e2-micro` VM (1 GB RAM, 30 GB disk), plus **Tailscale**, so only
-your own Mac and iPhone can open the dashboard. Nothing is exposed to the internet.
+your own Mac and iPhone can open the dashboard. Nothing is exposed to the internet
+(unless you later choose the optional public login at the end of this guide).
 
 **Cost:** $0, as long as you follow the settings marked ⚠️ below. OpenRouter costs the same as now.
 

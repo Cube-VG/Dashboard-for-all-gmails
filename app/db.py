@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS login_failures (
     client TEXT NOT NULL,
     at     TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_login_failures ON login_failures(client, at);
+CREATE INDEX IF NOT EXISTS idx_login_failures_at ON login_failures(at);
 CREATE TABLE IF NOT EXISTS auth_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

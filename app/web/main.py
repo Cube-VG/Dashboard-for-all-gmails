@@ -444,6 +444,8 @@ def _client(request: Request) -> str:
             host = fwd.split(",")[-1].strip()[:64]
     try:  # one IPv6 user owns a whole /64: count it as one client
         ip = ipaddress.ip_address(host)
+        if ip.version == 6 and ip.ipv4_mapped:  # "::ffff:1.2.3.4" is just an IPv4 client
+            return str(ip.ipv4_mapped)
         if ip.version == 6:
             return str(ipaddress.ip_network(f"{ip}/64", strict=False))
     except ValueError:
@@ -499,6 +501,12 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                 and (urlsplit(origin).hostname or "") not in config.ALLOWED_HOSTS):
             return PlainTextResponse("Cross-site request blocked", status_code=403)
         path = request.url.path
+        if request.method == "POST" and path == "/login":
+            # the only body a stranger can send: refuse anything bigger than a login form
+            # before it is parsed (a form may otherwise hold ~1 GB of fields)
+            size = request.headers.get("content-length", "")
+            if not size.isdigit() or int(size) > 16 * 1024:
+                return PlainTextResponse("Request too large", status_code=413)
         if login_on and path not in ("/login", "/logout") and not path.startswith("/static/"):
             with connect() as conn:
                 signed_in = auth.session_valid(conn, request.cookies.get(auth.COOKIE))
@@ -550,33 +558,45 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         if not login_on:
             return RedirectResponse(nxt, status_code=303)
         client = _client(request)
-        with login_lock, connect() as conn:
-            wait = auth.locked_minutes(conn, client)
-            paused = auth.locked_minutes(conn, auth.CODE_GUARD, auth.MAX_CODE_FAILURES)
-            if wait or paused:
-                left = max(wait, paused)
-                return login_page(request, nxt, f"Too many wrong attempts. Try again in {left} "
-                                                f"minute{'s' if left != 1 else ''}.", 429)
-            ok_pw = auth.verify_password((password or "")[:1024], password_hash)
-            counter = None
-            if totp_secret:
-                counter = auth.check_totp(totp_secret, (code or "")[:32], auth.last_totp_counter(conn))
-            if not ok_pw or (totp_secret and counter is None):
-                auth.record_failure(conn, client)
-                if ok_pw:  # someone has the password but not the phone: pause logins for everyone
-                    auth.record_failure(conn, auth.CODE_GUARD)
-                    log.error("correct password but wrong 2-step code from %s: consider "
-                              "changing the password (python -m app.cli set-login)", client)
+        what = "password or code" if totp_secret else "password"
+        failed = (f"That {what} isn't right. (After repeated wrong tries, sign-in pauses for "
+                  f"up to {auth.FAIL_WINDOW_MIN} minutes.)")
+        # never park a web thread on the lock: a flood would starve the signed-in pages
+        if not login_lock.acquire(blocking=False):
+            return login_page(request, nxt, "Busy, please try again in a moment.", 503)
+        try:
+            with connect() as conn:
+                wait = auth.locked_minutes(conn, client)
+                if wait:
+                    return login_page(request, nxt, f"Too many wrong attempts. Try again in {wait} "
+                                                    f"minute{'s' if wait != 1 else ''}.", 429)
+                if auth.locked_minutes(conn, auth.CODE_GUARD, auth.MAX_CODE_FAILURES):
+                    # paused because someone had the password: answer exactly like a wrong
+                    # password, so the pause doesn't tell a guesser their password was right
+                    auth.record_failure(conn, client)
+                    conn.commit()
+                    return login_page(request, nxt, failed, 401)
+                ok_pw = auth.verify_password((password or "")[:1024], password_hash)
+                counter = None
+                if totp_secret:
+                    counter = auth.check_totp(totp_secret, (code or "")[:32], auth.last_totp_counter(conn))
+                if not ok_pw or (totp_secret and counter is None):
+                    auth.record_failure(conn, client)
+                    if ok_pw:  # someone has the password but not the phone: pause logins for everyone
+                        auth.record_failure(conn, auth.CODE_GUARD)
+                        log.error("correct password but wrong 2-step code from %s: change the "
+                                  "password (python -m app.cli set-login)", client)
+                    conn.commit()
+                    log.warning("failed login from %s", client)
+                    return login_page(request, nxt, failed, 401)
+                auth.clear_failures(conn, client)
+                if counter is not None:
+                    auth.save_totp_counter(conn, counter)
+                token, _ = auth.create_session(conn, bool(remember),
+                                               request.headers.get("user-agent", ""))
                 conn.commit()
-                log.warning("failed login from %s", client)
-                what = "password or code" if totp_secret else "password"
-                return login_page(request, nxt, f"That {what} isn't right.", 401)
-            auth.clear_failures(conn, client)
-            if counter is not None:
-                auth.save_totp_counter(conn, counter)
-            token, _ = auth.create_session(conn, bool(remember),
-                                           request.headers.get("user-agent", ""))
-            conn.commit()
+        finally:
+            login_lock.release()
         resp = RedirectResponse(nxt, status_code=303)
         resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax", path="/",
                         secure=_secure_cookie(request),

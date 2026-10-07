@@ -10,10 +10,17 @@ if ! has DASHBOARD_PASSWORD_HASH || ! has DASHBOARD_TOTP_SECRET; then
   exit 1
 fi
 sudo systemctl restart inbox   # make sure the running app has the login switched on
-sleep 2
-code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/html' http://127.0.0.1:8000/)
-if [ "$code" != "303" ]; then
-  echo "The app is not asking for a login yet (got HTTP $code). Not going public."; exit 1
+# ask the running app itself: its login page must ask for the password AND the 6-digit code
+page=""
+for _ in $(seq 30); do
+  page=$(curl -s http://127.0.0.1:8000/login || true)
+  grep -q 'name="code"' <<<"$page" && break
+  sleep 1
+done
+if ! grep -q 'name="code"' <<<"$page"; then
+  echo "The app isn't asking for password + 6-digit code. Not going public."
+  echo "Run: .venv/bin/python -m app.cli set-login && sudo systemctl restart inbox"
+  exit 1
 fi
 # (the first time, Tailscale may print a link to allow Funnel for this machine: open it)
 sudo tailscale funnel --bg --https=443 http://127.0.0.1:8000

@@ -30,9 +30,10 @@ say "Installing the app's Python packages"
 say "Settings (.env)"
 [ -f .env ] || cp .env.example .env
 chmod 600 .env
-setenv() {  # set KEY=value in .env, replacing an existing line
-  grep -v "^$1=" .env > .env.tmp || true
-  echo "$1=$2" >> .env.tmp && mv .env.tmp .env && chmod 600 .env
+setenv() {  # set KEY=value in .env, replacing an existing line (temp file private from the start)
+  ( umask 077
+    grep -v "^$1=" .env > .env.tmp || true
+    echo "$1=$2" >> .env.tmp && mv .env.tmp .env && chmod 600 .env )
 }
 setenv PASSWORD_STORE env      # no Keychain on a server: passwords live in .env (chmod 600)
 setenv NOTIFICATIONS 0         # no desktop here to show pop-ups
@@ -82,6 +83,9 @@ Wants=network-online.target
 User=$USER
 WorkingDirectory=$REPO
 Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+# the app needs ~100 MB; cap it so nothing can ever take the whole 1 GB VM down with it
+MemoryMax=500M
 ExecStart=$REPO/.venv/bin/python -m app --no-browser
 Restart=always
 RestartSec=10
