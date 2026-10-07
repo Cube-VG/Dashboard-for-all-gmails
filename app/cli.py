@@ -23,7 +23,7 @@ def cmd_set_password(args):
 
 
 def cmd_check(args):
-    from imap_tools import MailBox
+    from app.sync.imap_sync import connect_mailbox
 
     for a in config.load_accounts():
         pw = config.get_password(a.email)
@@ -31,7 +31,7 @@ def cmd_check(args):
             print(f"✗ {a.label:<22} no password saved (python -m app.cli set-password {a.email})")
             continue
         try:
-            with MailBox(a.imap_host, a.imap_port).login(a.username, pw, initial_folder=a.folder):
+            with connect_mailbox(a.imap_host, a.imap_port).login(a.username, pw, initial_folder=a.folder):
                 print(f"✓ {a.label:<22} {a.email}")
         except Exception as exc:  # noqa: BLE001
             print(f"✗ {a.label:<22} {a.email}: {exc}")

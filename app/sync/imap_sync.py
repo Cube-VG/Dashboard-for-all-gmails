@@ -18,6 +18,11 @@ log = logging.getLogger(__name__)
 SNIPPET_CHARS = 300
 BODY_CHARS = 20_000
 FETCH_BULK = 50
+IMAP_TIMEOUT = 60  # seconds; a stalled connection must not block every later sync
+
+
+def connect_mailbox(host: str, port: int) -> MailBox:
+    return MailBox(host, port, timeout=IMAP_TIMEOUT)
 
 
 def html_to_text(html: str) -> str:
@@ -64,7 +69,7 @@ def _new_uids(mailbox: MailBox, last_uid: int) -> list[str]:
     return sorted(uids, key=int)[-config.MAX_INITIAL_MESSAGES:]
 
 
-def sync_account(conn, account: config.Account, mailbox_factory=MailBox) -> int:
+def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox) -> int:
     """Fetch mail newer than what we already have. Returns the number of new messages."""
     row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
     password = config.get_password(account.email)
@@ -103,7 +108,7 @@ def sync_account(conn, account: config.Account, mailbox_factory=MailBox) -> int:
         return added
 
 
-def sync_all(conn, accounts: list[config.Account], mailbox_factory=MailBox) -> dict[str, int | str]:
+def sync_all(conn, accounts: list[config.Account], mailbox_factory=connect_mailbox) -> dict[str, int | str]:
     """Sync every account; one failing account never stops the others."""
     results: dict[str, int | str] = {}
     for account in accounts:
