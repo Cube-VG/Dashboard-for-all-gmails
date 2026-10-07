@@ -82,6 +82,10 @@ In the dashboard:
 - Each email is scored once. `MAX_AI_CALLS_PER_DAY` in `.env` is a hard daily cap.
 - Free model rate-limited? It switches to the paid Gemma for the rest of that run.
 
+## Run it 24/7 for free (phone access too)
+
+Free Google Cloud VM + Tailscale, one setup script: see [docs/DEPLOY.md](docs/DEPLOY.md).
+
 ## Command line
 
 ```

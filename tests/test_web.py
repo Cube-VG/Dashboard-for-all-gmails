@@ -518,3 +518,13 @@ def test_old_databases_get_read_penalty_removed_once(tmp_path):
         conn = db.connect(path)
         assert conn.execute("SELECT priority_score FROM messages").fetchone()[0] == 5.0
         conn.close()
+
+
+def test_tailscale_name_is_allowed_but_other_sites_are_not(env, monkeypatch):
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", ["inbox-vm.tail1234.ts.net"])
+    mid = env.ids["Contract needs signature"]
+    url = f"/message/{mid}/read"
+    ok = env.client.post(url, headers={**JSON, "Origin": "https://inbox-vm.tail1234.ts.net"})
+    assert ok.status_code == 200  # tailscale serve rewrote Host to 127.0.0.1, Origin is the ts.net name
+    bad = env.client.post(url, headers={**JSON, "Origin": "https://evil.example.com"})
+    assert bad.status_code == 403

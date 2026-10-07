@@ -53,17 +53,50 @@ def load_accounts(path: Path = ACCOUNTS_FILE) -> list[Account]:
     return [Account(**a) for a in data.get("accounts", [])]
 
 
+# "keyring" (default: macOS Keychain / Windows Credential Manager) or "env" (passwords in .env,
+# for servers without a keyring, e.g. a cloud VM). A keyring that fails falls back to .env.
+PASSWORD_STORE = os.getenv("PASSWORD_STORE", "keyring").strip().lower()
+
+# Extra host names the dashboard answers to, e.g. the VM's Tailscale name (comma-separated).
+ALLOWED_HOSTS = [h.strip().lower() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+ENV_FILE = ROOT / ".env"
+
+
+def _env_key(email: str) -> str:
+    return "IMAP_PASSWORD_" + "".join(c if c.isalnum() else "_" for c in email).upper()
+
+
 def get_password(email: str) -> str | None:
     """Password from the OS keyring, or IMAP_PASSWORD_<email> in .env as a fallback."""
-    try:
-        pw = keyring.get_password(KEYRING_SERVICE, email)
-    except keyring.errors.KeyringError:
-        pw = None
-    if pw:
-        return pw
-    env_key = "IMAP_PASSWORD_" + "".join(c if c.isalnum() else "_" for c in email).upper()
-    return os.getenv(env_key)
+    pw = None
+    if PASSWORD_STORE != "env":
+        try:
+            pw = keyring.get_password(KEYRING_SERVICE, email)
+        except Exception:  # noqa: BLE001 - no usable keyring on this machine
+            pw = None
+    return pw or os.getenv(_env_key(email))
 
 
-def set_password(email: str, password: str) -> None:
-    keyring.set_password(KEYRING_SERVICE, email, password)
+def set_password(email: str, password: str) -> str:
+    """Save a password; returns where it went ("keyring" or ".env")."""
+    if PASSWORD_STORE != "env":
+        try:
+            keyring.set_password(KEYRING_SERVICE, email, password)
+            return "keyring"
+        except Exception:  # noqa: BLE001 - e.g. a server with no keyring: use .env instead
+            pass
+    _write_env(_env_key(email), password)
+    os.environ[_env_key(email)] = password
+    return ".env"
+
+
+def _write_env(key: str, value: str, path=None) -> None:
+    """Set KEY='value' in .env (replacing an old line) and keep the file private (chmod 600)."""
+    path = path or ENV_FILE
+    quoted = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    lines = path.read_text().splitlines() if path.exists() else []
+    lines = [ln for ln in lines if not ln.split("=", 1)[0].strip() == key]
+    lines.append(f"{key}={quoted}")
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o600)

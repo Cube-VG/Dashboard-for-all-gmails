@@ -20,8 +20,9 @@ from app import config, db
 
 def cmd_set_password(args):
     pw = getpass.getpass(f"Password / App Password for {args.email}: ").replace(" ", "")
-    config.set_password(args.email, pw)
-    print("Saved in your OS keyring.")
+    where = config.set_password(args.email, pw)
+    print("Saved in your OS keyring." if where == "keyring"
+          else "Saved in .env (readable only by you); this machine has no keyring.")
 
 
 def cmd_check(args):

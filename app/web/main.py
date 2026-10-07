@@ -49,7 +49,7 @@ RULE_KINDS = {
 }
 SCORED_BY = {"rule": "a rule", "gemma": "Gemma", "user": "you"}
 SEARCH_FIELDS = ("subject", "from_email", "from_name", "snippet")
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver", *config.ALLOWED_HOSTS]
 FLASH_COOKIE = "flash"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
@@ -460,7 +460,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         # Any web page you visit could post a form to localhost; only accept our own.
         origin = request.headers.get("origin")
         if (request.method not in ("GET", "HEAD") and origin
-                and urlsplit(origin).netloc != request.headers.get("host")):
+                and urlsplit(origin).netloc != request.headers.get("host")
+                # behind `tailscale serve` the Host may be rewritten; trust only configured names
+                and (urlsplit(origin).hostname or "") not in config.ALLOWED_HOSTS):
             return PlainTextResponse("Cross-site request blocked", status_code=403)
         resp = await call_next(request)
         resp.headers.setdefault("Content-Security-Policy", CSP)
