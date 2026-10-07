@@ -2,17 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#e8ebe6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e0f0c" media="(prefers-color-scheme: dark)">
   <title>{{ status }} · Unified Inbox</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
 </head>
-<body>
+<body class="error-page">
 <main id="content">
-  <div class="empty-state">
-    <h2>{{ status }}</h2>
+  <div class="empty-state error-card">
+    <h1 class="title">{{ status }}</h1>
     <p>{{ detail }}</p>
-    <p><a class="btn" href="/">Back to the inbox</a></p>
+    <a class="btn btn-secondary" href="/">Back to the inbox</a>
   </div>
 </main>
 </body>

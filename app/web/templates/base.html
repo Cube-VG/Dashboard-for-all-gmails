@@ -2,69 +2,134 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#e8ebe6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e0f0c" media="(prefers-color-scheme: dark)">
   <title>{% if stats and stats.unread_do %}({{ stats.unread_do }}) {% endif %}{% block title %}Inbox{% endblock %} · Unified Inbox</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script src="/static/prefs.js?v={{ static_v }}"></script>
   <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
   <script src="/static/app.js?v={{ static_v }}" defer></script>
 </head>
-<body>
+<body data-page="{{ page }}">
 {% include "_icons.html" %}
+<a class="skip" href="#content">Skip to the email</a>
 <header class="top">
-  <div class="bar">
-    <a class="brand" href="/"><svg class="ic lg"><use href="#i-inbox"/></svg><span>Unified Inbox</span></a>
-    <nav class="tabs" aria-label="View">
+  <div class="bar glass-host">
+    <span class="sync-track" aria-hidden="true"><span class="sync-line"></span></span>
+    <a class="brand" href="/"><span class="brand-mark"><svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg></span><span class="brand-name">Inbox</span></a>
+    <nav class="seg" aria-label="View">
       <a href="{{ f.url(view='matrix') }}"{% if page == 'matrix' %} aria-current="page"{% endif %}>Matrix</a>
       <a href="{{ f.url(view='list') }}"{% if page == 'list' %} aria-current="page"{% endif %}>List</a>
     </nav>
     <form id="filters" class="search" method="get" action="/" role="search">
       {% if f.view == 'list' %}<input type="hidden" name="view" value="list">{% endif %}
       {% if f.account %}<input type="hidden" name="account" value="{{ f.account }}">{% endif %}
-      <svg class="ic"><use href="#i-search"/></svg>
-      <input type="search" name="q" value="{{ f.q }}" placeholder="Search sender, subject, text…" aria-label="Search email">
+      {% if f.unread %}<input type="hidden" name="unread" value="1">{% endif %}
+      {% if f.unsorted %}<input type="hidden" name="sorted" value="no">{% endif %}
+      {% if f.category and page not in ('matrix', 'list') %}<input type="hidden" name="category" value="{{ f.category }}">{% endif %}
+      <svg class="ic search-ic" aria-hidden="true"><use href="#i-search"/></svg>
+      <input type="search" name="q" value="{{ f.q }}" placeholder="Search sender, subject, text" aria-label="Search email" aria-keyshortcuts="/" enterkeyhint="search" autocapitalize="off" autocomplete="off" spellcheck="false">
+      <kbd class="kbd-hint" aria-hidden="true">/</kbd>
     </form>
-    <div class="actions">
-      <form method="post" action="/sync" data-enhance>
-        <input type="hidden" name="next" value="{{ here }}">
-        <button class="btn" data-busy="Syncing…" title="Fetch new mail and sort it now"><svg class="ic spin"><use href="#i-sync"/></svg><span>Sync now</span></button>
-      </form>
-      <a class="btn ghost" href="/rules"{% if page == 'rules' %} aria-current="page"{% endif %}>Rules</a>
-    </div>
+    <details class="menu-wrap more-wrap">
+      <summary class="icon-btn" aria-label="More" title="More"><svg class="ic" aria-hidden="true"><use href="#i-more"/></svg></summary>
+      <div class="menu glass thick" id="more-menu">
+        <a class="menu-item" href="/rules"{% if page == 'rules' %} aria-current="page"{% endif %}><svg class="ic" aria-hidden="true"><use href="#i-star"/></svg><span>Sender rules</span></a>
+        <button type="button" class="menu-item keys-item" popovertarget="keys"><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard shortcuts</span><kbd>?</kbd></button>
+        <div class="menu-prefs" data-prefs hidden>
+          <hr class="menu-sep">
+          <button type="button" class="menu-item switch" role="switch" aria-checked="false" data-pref="density"><span>Compact rows</span><i class="knob" aria-hidden="true"></i></button>
+          <button type="button" class="menu-item switch" role="switch" aria-checked="false" data-pref="glass"><span>Solid surfaces (less transparency)</span><i class="knob" aria-hidden="true"></i></button>
+          <button type="button" class="menu-item switch" role="switch" aria-checked="true" data-pref="advance"><span>Open next email after an action</span><i class="knob" aria-hidden="true"></i></button>
+        </div>
+      </div>
+    </details>
+    <form class="sync-form" method="post" action="/sync" data-enhance data-sync>
+      <input type="hidden" name="next" value="{{ here }}">
+      {# one lime per area: while the empty inbox shows its own lime "Sync now", this one turns neutral #}
+      <button class="btn {{ 'btn-secondary on-glass' if (stats is defined and stats and not stats.total and page in ('matrix', 'list')) else 'btn-primary' }} sync-btn" data-busy="Syncing…" title="Fetch new mail and sort it now"><svg class="ic spin" aria-hidden="true"><use href="#i-sync"/></svg><svg class="ic done-ic" aria-hidden="true"><use href="#i-check"/></svg><span class="sync-label">Sync now</span></button>
+    </form>
   </div>
-  <div class="filterbar" id="filterbar">
+</header>
+{% if page in ('matrix', 'list') %}
+<div class="filterbar" id="filterbar">
+  <div class="filter-row">
+    <a class="chip-link unread-chip{% if f.unread %} on{% endif %}" href="{{ f.url(unread='' if f.unread else '1') }}"{% if f.unread %} aria-current="true"{% endif %}><svg class="ic" aria-hidden="true"><use href="#i-unread"/></svg>Unread</a>
     <nav class="chips" aria-label="Accounts">
-      <a class="chip-link{% if not f.account %} on{% endif %}" href="{{ f.url(account='') }}">All accounts</a>
+      <a class="chip-link{% if not f.account %} on{% endif %}" href="{{ f.url(account='') }}"{% if not f.account %} aria-current="true"{% endif %}>All accounts</a>
       {% for c in chips %}
-      <a class="chip-link{% if f.account == c.email %} on{% endif %}" style="--c: {{ c.color }}" href="{{ f.url(account=c.email) }}" title="{{ c.email }}"><i class="dot"></i>{{ c.label }}{% if c.unread %}<span class="n" title="unread">{{ c.unread }}</span>{% endif %}</a>
+      <a class="chip-link{% if f.account == c.email %} on{% endif %}" style="--c: {{ c.color }}" href="{{ f.url(account=c.email) }}" title="{{ c.email }}"{% if f.account == c.email %} aria-current="true"{% endif %}><i class="dot"></i>{{ c.label }}{% if c.unread %}<span class="n">{{ c.unread }}<span class="sr-only"> unread</span></span>{% endif %}</a>
       {% endfor %}
     </nav>
-    <div class="filter-controls">
-      <label class="toggle"><input type="checkbox" name="unread" value="1" form="filters" data-autosubmit{% if f.unread %} checked{% endif %}> Unread only</label>
+    <label class="chip-select"><svg class="ic" aria-hidden="true"><use href="#i-tag"/></svg>
       <select name="category" form="filters" data-autosubmit aria-label="Category">
         <option value="">All categories</option>
         {% for c in categories %}<option value="{{ c }}"{% if c == f.category %} selected{% endif %}>{{ c }}</option>{% endfor %}
         {% if f.category and f.category not in categories %}<option value="{{ f.category }}" selected>{{ f.category }}</option>{% endif %}
       </select>
-      <noscript><button class="btn" form="filters">Apply</button></noscript>
-      {% if f.active %}<a class="clear" href="{{ f.url(account='', q='', unread='', category='') }}">Clear filters</a>{% endif %}
-    </div>
+      <svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg>
+    </label>
+    <noscript><button class="btn btn-surface" form="filters">Apply</button></noscript>
   </div>
-</header>
-<div class="status" id="status">
-  {% for a in accounts %}
-  <span class="acct-status{% if a.last_error %} err{% endif %}" title="{{ a.email }} · {{ a.folder }} · last sync: {{ a.synced_full }}{% if a.last_error %} · error: {{ a.last_error }}{% endif %}">
-    <i class="dot" style="--c: {{ a.color }}"></i><b>{{ a.label }}</b>
-    {% if a.last_error %}error: {{ a.last_error|truncate(80) }}{% elif a.synced_ago %}synced {{ a.synced_ago }}{% else %}not synced yet{% endif %}
-  </span>
-  {% else %}
-  <span>No accounts yet: list them in accounts.yaml, then run <code>python -m app.cli sync</code>.</span>
-  {% endfor %}
-  <span class="ai-usage{% if ai_calls >= ai_max %} err{% endif %}" title="AI requests sent to OpenRouter today (UTC) / daily cap MAX_AI_CALLS_PER_DAY">AI calls today: {{ ai_calls }} / {{ ai_max }}</span>
+  {% if f.active %}
+  {% set acct = chips|selectattr('email', 'equalto', f.account)|first %}
+  <p class="active-filters">Showing
+    {% if f.unread %}<a class="af" href="{{ f.url(unread='') }}" aria-label="Remove filter Unread"><b>Unread</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+    {% if f.account %}<a class="af" href="{{ f.url(account='') }}" aria-label="Remove filter {{ acct.label if acct else f.account }}"><b>{{ acct.label if acct else f.account }}</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+    {% if f.q %}<a class="af" href="{{ f.url(q='') }}" aria-label="Remove search {{ f.q }}"><b>“{{ f.q }}”</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+    {% if f.category %}<a class="af" href="{{ f.url(category='') }}" aria-label="Remove filter {{ f.category }}"><b>{{ f.category }}</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+    {% if f.unsorted %}<a class="af" href="{{ f.url(sorted='') }}" aria-label="Remove filter Not sorted yet"><b>Not sorted yet</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+    <span class="af-count">— {{ total }} email{{ "" if total == 1 else "s" }}</span> <span class="af-end">· <a class="clear" href="{{ f.url(account='', q='', unread='', category='', sorted='') }}">Clear filters</a></span>
+  </p>
+  {% endif %}
 </div>
-<div id="flash" class="flash-box" aria-live="polite">{% if flash %}<p class="flash {{ flash.kind }}" role="status">{{ flash.text }}</p>{% endif %}</div>
+{% endif %}
+{% block flash %}
+<div id="flash" class="flash-box" aria-live="polite">{% if flash %}<p class="flash {{ flash.kind }}" role="{{ 'alert' if flash.kind == 'err' else 'status' }}"><span class="flash-glyph" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="{{ '#i-q-do' if flash.kind == 'err' else '#i-check' }}"/></svg></span><span class="flash-msg">{{ flash.text }}</span>{% if here %}<a class="flash-x" href="{{ here }}" aria-label="Dismiss" title="Dismiss"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}</p>{% endif %}</div>
+{% endblock %}
 <main id="content">
 {% block content %}{% endblock %}
 </main>
+<div id="keys" popover role="dialog" aria-labelledby="keys-title" tabindex="-1" class="sheet glass thick">
+  <div class="sheet-head">
+    <h2 id="keys-title">Keyboard shortcuts</h2>
+    <button type="button" class="icon-btn" popovertarget="keys" popovertargetaction="hide" aria-label="Close" title="Close (Esc)"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="keys-groups">
+    <div class="keys-group">
+      <h3>Navigate</h3>
+      <dl>
+        <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next / previous email</dd>
+        <dt><kbd>o</kbd> <kbd>Enter</kbd></dt><dd>Open the email</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close menu, search or email</dd>
+        <dt><kbd>/</kbd></dt><dd>Search</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <h3>Triage</h3>
+      <dl>
+        <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></dt><dd>Move to Do now · Schedule · Quick reply · Later</dd>
+        <dt><kbd>e</kbd></dt><dd>Mark read, open the next email</dd>
+        <dt><kbd>⇧</kbd> <kbd>U</kbd> · <kbd>⇧</kbd> <kbd>I</kbd></dt><dd>Mark unread · mark read</dd>
+        <dt><kbd>z</kbd></dt><dd>Undo the last action</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <h3>Go to</h3>
+      <dl>
+        <dt><kbd>g</kbd> <kbd>m</kbd></dt><dd>Matrix</dd>
+        <dt><kbd>g</kbd> <kbd>l</kbd></dt><dd>List</dd>
+        <dt><kbd>g</kbd> <kbd>r</kbd></dt><dd>Sender rules</dd>
+        <dt><kbd>?</kbd></dt><dd>This list</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="sheet-prefs" data-prefs hidden>
+    <button type="button" class="menu-item switch" role="switch" aria-checked="true" data-pref="keys"><span>Single-key shortcuts</span><i class="knob" aria-hidden="true"></i></button>
+  </div>
+</div>
+<button type="button" class="new-pill" id="new-pill" hidden></button>
 </body>
 </html>

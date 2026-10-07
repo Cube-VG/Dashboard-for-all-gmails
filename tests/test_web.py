@@ -327,11 +327,15 @@ def test_status_strip(env):
     assert "<b>Personal</b>" in status and "synced just now" in status
     assert 'class="acct-status err"' in status and "LOGIN failed: bad password" in status
     assert f"AI calls today: 2 / {config.MAX_AI_CALLS_PER_DAY}" in status
+    assert 'class="banner warn"' in html and "can't sign in" in html  # says how to fix it
+    assert "set-password info@shop.example" in html and "Retry sync" in html
+    assert "1 problem" in html
 
 
 def test_api_stats(env):
     s = env.client.get("/api/stats").json()
     assert s["quadrants"] == {"do": 2, "schedule": 2, "quick": 1, "later": 1}
+    assert s["quadrant_unread"] == {"do": 1, "schedule": 2, "quick": 1, "later": 0}
     assert (s["total"], s["unread"], s["unscored"], s["unread_do"]) == (8, 6, 2, 1)
     assert s["ai_calls_today"] == 0 and s["ai_calls_max"] == config.MAX_AI_CALLS_PER_DAY
 
@@ -351,3 +355,122 @@ def test_static_files_are_local(env):
     assert not re.search(r'(src|href)="(https?:)?//', html.split("<body>")[0])  # no CDN
     assert env.client.get("/static/style.css").status_code == 200
     assert env.client.get("/static/app.js").status_code == 200
+    assert env.client.get("/static/prefs.js").status_code == 200
+
+
+def test_board_head_columns_and_dock(env):
+    html = env.client.get("/").text
+    assert '<h1 class="hero"><span class="num">1</span> to do now</h1>' in html  # same number as the tab badge
+    do = html.split('data-col="do"', 1)[1].split("</section>", 1)[0]
+    assert "<b>1 new</b> · 2" in do and "1 unread of 2" in do
+    assert 'class="dock glass"' in html and 'href="#col-do"' in html
+    later = html.split('data-col="later"', 1)[1].split("</section>", 1)[0]
+    assert "Nothing parked here." not in later  # has a card
+    # per-card "why?" moved into a tooltip; the pane has the full reason
+    assert "Why: Direct request with a deadline · scored by Gemma" in html
+
+
+def test_sorting_strip_replaces_the_unsorted_wall(env):
+    html = env.client.get("/").text
+    strip = html.split('data-col="unsorted"', 1)[1].split("</section>", 1)[0]
+    assert '<details data-key="unsorted-v2">' in strip  # closed by default
+    assert "6 of 8 sorted" in strip and "2 waiting" in strip
+    assert 'aria-valuenow="6"' in strip and 'aria-valuemax="8"' in strip
+    assert "Needs ≈1 AI call · " in strip
+    assert 'href="/?view=list&amp;sorted=no"' in strip  # "See all … in List" never dead-ends
+
+
+def test_unsorted_filter(env):
+    i = env.ids
+    assert listed(env, sorted="no") == [i["<script>alert(1)</script>"], i["Order #42 refund request"]]
+    r = env.client.get("/", params={"view": "list", "sorted": "no"})
+    assert "Not sorted yet" in r.text and "Clear filters" in r.text
+    assert 'href="/?view=list"' in r.text  # removing the filter keeps the view
+    assert 'name="sorted" value="no"' in r.text  # search keeps the filter
+
+
+def test_all_caught_up_and_empty_columns(env):
+    conn = db.connect(env.path)
+    conn.execute("UPDATE messages SET is_read = 1")
+    conn.commit()
+    conn.close()
+    r = env.client.get("/", params={"unread": "1"})
+    assert "All caught up" in r.text and "Show read mail" in r.text
+    assert "Nothing matches" not in r.text
+    r = env.client.get("/", params={"q": "Weekly"})
+    assert "Nothing to plan." in r.text and "Nothing urgent. You&#39;re clear." in r.text
+
+
+def test_rule_copy_and_removable_rule_chips(env):
+    r = env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "boss@corp.com"})
+    assert r.json()["message"].endswith("It also sorts mail that's still waiting.")
+    rule_id = query(env, "SELECT id FROM rules WHERE pattern = 'boss@corp.com'")[0][0]
+    detail = env.client.get(f"/message/{env.ids['Contract needs signature']}").text
+    assert 'data-kind="vip" data-pattern="boss@corp.com"' in detail  # lets JS undo the removal
+    assert f'action="/rules/{rule_id}/delete"' in detail
+    page = env.client.get("/rules").text
+    assert 'data-kind="vip" data-pattern="boss@corp.com"' in page
+    assert 'aria-label="Remove rule boss@corp.com"' in page
+
+
+def test_rules_page_shows_bad_input_inline_without_js(env):
+    r = env.client.post("/rules", data={"kind": "vip", "pattern": "nope", "next": "/rules"})
+    assert r.status_code == 200 and 'class="field-error"' in r.text and 'aria-invalid="true"' in r.text
+
+
+def test_forms_work_without_js(env):
+    # `no-referrer` makes browsers send `Origin: null` with plain form posts, which the
+    # cross-site guard must reject; `same-origin` keeps the real Origin on our own forms
+    assert env.client.get("/").headers["referrer-policy"] == "same-origin"
+    mid = env.ids["Contract needs signature"]
+    r = env.client.post(f"/message/{mid}/read", data={"is_read": "1", "next": "/"},
+                        headers={"Origin": "http://testserver"})
+    assert r.status_code == 200 and "Marked as read" in r.text
+    r = env.client.post(f"/message/{mid}/read", headers={"Origin": "null"})
+    assert r.status_code == 403  # sandboxed frames still blocked
+
+
+def test_rejected_rule_keeps_what_was_typed(env):
+    r = env.client.post("/rules", data={"kind": "low", "pattern": "boss at corp", "next": "/rules"})
+    assert r.status_code == 200 and 'class="field-error"' in r.text
+    assert 'value="boss at corp"' in r.text
+    assert re.search(r'value="low" checked', r.text)
+    assert not re.search(r'value="vip" checked', r.text)
+    # from the pane the pattern comes from a select; the redirect target is left alone
+    r = env.client.post("/rules", data={"kind": "vip", "pattern": "x", "next": "/?view=list"},
+                        follow_redirects=False)
+    assert r.headers["location"] == "/?view=list"
+
+
+def test_category_menu_only_offers_categories_with_mail(env):
+    html = env.client.get("/").text
+    assert '<option value="otp">' in html and '<option value="alert">' in html
+    html = env.client.get("/", params={"account": "info@shop.example"}).text
+    menu = html.split('name="category"', 1)[1].split("</select>", 1)[0]
+    assert '<option value="alert">' in menu and '<option value="otp">' not in menu
+
+
+def test_unsorted_mail_is_not_called_done(env):
+    # nothing in Do now while emails still wait for the AI: not a success state yet
+    r = env.client.get("/", params={"q": "Order"})
+    do = r.text.split('data-col="do"', 1)[1].split("</section>", 1)[0]
+    assert "1 still being sorted" in do and "You&#39;re clear" not in do
+    conn = db.connect(env.path)
+    conn.execute("UPDATE messages SET is_read = 1 WHERE id = ?", (env.ids["Contract needs signature"],))
+    conn.commit()
+    conn.close()
+    assert '<h1 class="hero">Nothing to do yet</h1>' in env.client.get("/").text
+
+
+def test_problem_banner_is_short_and_empty_inbox_has_one_primary(env, tmp_path):
+    conn = db.connect(env.path)
+    db.mark_synced(conn, env.shop, 0, error="LOGIN failed: bad password")
+    conn.commit()
+    conn.close()
+    html = env.client.get("/").text
+    banner = html.split('class="banner warn"', 1)[1].split("</form>", 1)[0]
+    assert "<summary>How to fix</summary>" in banner
+    assert '<code class="cmd">python -m app.cli set-password info@shop.example</code>' in banner
+    empty = tmp_path / "empty.db"
+    client = TestClient(create_app(conn_factory=lambda: db.connect(empty)))
+    assert client.get("/").text.count("btn-primary") == 1  # the empty state's Sync now

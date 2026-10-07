@@ -2,64 +2,195 @@
 {% block title %}{{ "List" if f.view == "list" else "Matrix" }}{% endblock %}
 {% block content %}
 {% import "_macros.html" as ui with context %}
+{% set SUBS = {"do": "Urgent + important", "schedule": "Important", "quick": "Urgent", "later": "Neither"} %}
+{% set SHORT = {"do": "Do now", "schedule": "Schedule", "quick": "Quick", "later": "Later"} %}
+{% set EMPTY = {"do": "Nothing urgent. You're clear.", "schedule": "Nothing to plan.", "quick": "No quick replies waiting.", "later": "Nothing parked here."} %}
+{% set problems = accounts|selectattr("last_error")|list %}
+{% set synced = accounts|selectattr("last_synced_at")|sort(attribute="last_synced_at")|list %}
+{% set last_sync = synced[-1].synced_ago if synced else none %}
+{% set only_unread = f.unread and not (f.account or f.q or f.category or f.unsorted) %}
 <div class="layout{% if msg %} with-pane{% endif %}" id="layout">
   <div class="board" id="board">
+    <div class="board-head">
+      {% if stats.total and total %}
+        {% if f.active %}<h1 class="title">{{ total }} {{ "email matches" if total == 1 else "emails match" }}</h1>
+        {% elif f.view == "list" %}<h1 class="title">All email by priority</h1>
+        {% elif stats.unread_do %}<h1 class="hero"><span class="num">{{ stats.unread_do }}</span> to do now</h1>
+        {% elif stats.unscored %}<h1 class="hero">Nothing to do yet</h1>
+        {% else %}<h1 class="hero">Nothing to do now</h1>{% endif %}
+      {% endif %}
+      <details class="menu-wrap status-wrap">
+        <summary class="status-line">
+          <span>{{ stats.unread }} unread · {{ chips|length }} account{{ "" if chips|length == 1 else "s" }} · {% if last_sync %}updated {{ last_sync }}{% else %}not synced yet{% endif %}</span>
+          {% if problems %}<span class="problem"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>{{ problems|length }} problem{{ "" if problems|length == 1 else "s" }}</span>{% endif %}
+          <svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="menu glass thick status-menu" id="status">
+          <ul class="acct-list">
+            {% for a in accounts %}
+            <li class="acct-status{% if a.last_error %} err{% endif %}" title="{{ a.email }} · {{ a.folder }} · last sync: {{ a.synced_full }}">
+              <i class="dot" style="--c: {{ a.color }}"></i>
+              <span class="acct-text"><b>{{ a.label }}</b> {% if a.last_error %}<span class="acct-when"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>didn't sync</span> <span class="acct-err">{{ a.last_error }}</span>{% elif a.synced_ago %}<span class="acct-when">synced {{ a.synced_ago }}</span>{% else %}<span class="acct-when">not synced yet</span>{% endif %}</span>
+            </li>
+            {% else %}
+            <li class="acct-status">No accounts yet: list them in accounts.yaml, then run <code>python -m app.cli sync</code>.</li>
+            {% endfor %}
+          </ul>
+          <p class="ai-usage{% if ai_calls >= ai_max %} err{% endif %}"><span class="num">AI calls today: {{ ai_calls }} / {{ ai_max }}</span></p>
+          <p class="hint">Each call sorts up to 20 emails. The count resets at midnight UTC.</p>
+        </div>
+      </details>
+    </div>
+
+    {% for a in problems %}
+    {% set e = a.last_error|lower %}
+    <div class="banner warn" role="status">
+      <span class="banner-ic"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg></span>
+      {% set cmd = "python -m app.cli set-password " ~ a.email %}
+      {% if "no password saved" in e %}
+      <p class="banner-body"><b>{{ a.label }}</b> has no saved password.</p>
+      <details class="banner-more"><summary>How to fix</summary><p>Save its app password, then retry:</p><code class="cmd">{{ cmd }}</code><pre>{{ a.last_error }}</pre></details>
+      {% elif "login" in e or "auth" in e or "credential" in e or "password" in e %}
+      <p class="banner-body"><b>{{ a.label }}</b> can't sign in — the password was rejected.</p>
+      <details class="banner-more"><summary>How to fix</summary><p>Save a new app password, then retry:</p><code class="cmd">{{ cmd }}</code><pre>{{ a.last_error }}</pre></details>
+      {% else %}
+      <p class="banner-body"><b>{{ a.label }}</b> didn't sync: {{ a.last_error|truncate(120) }}</p>
+      <details class="banner-more"><summary>Details</summary><pre>{{ a.last_error }}</pre></details>
+      {% endif %}
+      <form class="banner-act" method="post" action="/sync" data-enhance data-sync>
+        <input type="hidden" name="next" value="{{ here }}">
+        <button class="btn btn-secondary">Retry sync</button>
+      </form>
+    </div>
+    {% endfor %}
+
   {% if not stats.total %}
     <div class="empty-state">
-      <svg class="ic xl"><use href="#i-mail"/></svg>
-      <h2>No email yet</h2>
-      <p>Press <b>Sync now</b> (or run <code>python -m app.cli sync</code>) to fetch mail from your accounts.</p>
+      <span class="empty-ic"><svg class="ic" aria-hidden="true"><use href="#i-mail"/></svg></span>
+      <h1 class="title">No email yet</h1>
+      <p>Press <b>Sync now</b> to fetch mail from your accounts (or run <code>python -m app.cli sync</code>).</p>
+      <form method="post" action="/sync" data-enhance data-sync>
+        <input type="hidden" name="next" value="{{ here }}">
+        <button class="btn btn-primary"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg><span>Sync now</span></button>
+      </form>
+    </div>
+  {% elif not total and only_unread %}
+    <div class="done-state">
+      <span class="done-check"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span>
+      <h1 class="hero">All caught up</h1>
+      <p>0 unread across {{ chips|length }} account{{ "" if chips|length == 1 else "s" }}{% if last_sync %} · checked {{ last_sync }}{% endif %}</p>
+      <a class="btn btn-surface" href="{{ f.url(unread='') }}">Show read mail</a>
     </div>
   {% elif not total %}
     <div class="empty-state">
-      <svg class="ic xl"><use href="#i-search"/></svg>
-      <h2>Nothing matches</h2>
-      <p>No emails match these filters. <a href="{{ f.url(account='', q='', unread='', category='') }}">Clear filters</a></p>
+      <span class="empty-ic"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg></span>
+      <h1 class="title">Nothing matches</h1>
+      <p>No emails match these filters. Remove one, or start over.</p>
+      <p class="filter-chips">
+        {% if f.unread %}<a class="af" href="{{ f.url(unread='') }}" aria-label="Remove filter Unread"><b>Unread</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+        {% if f.account %}<a class="af" href="{{ f.url(account='') }}" aria-label="Remove filter {{ f.account }}"><b>{{ f.account }}</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+        {% if f.q %}<a class="af" href="{{ f.url(q='') }}" aria-label="Remove search {{ f.q }}"><b>“{{ f.q }}”</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+        {% if f.category %}<a class="af" href="{{ f.url(category='') }}" aria-label="Remove filter {{ f.category }}"><b>{{ f.category }}</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+        {% if f.unsorted %}<a class="af" href="{{ f.url(sorted='') }}" aria-label="Remove filter Not sorted yet"><b>Not sorted yet</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
+      </p>
+      <a class="btn btn-secondary" href="{{ f.url(account='', q='', unread='', category='', sorted='') }}">Clear filters</a>
     </div>
   {% elif f.view == "list" %}
-    <section class="list" data-col="list">
-      <div class="list-head">
-        <h2>All email by priority</h2>
-        <span class="count">{% if total > cards|length %}{{ cards|length }} of {% endif %}{{ total }}</span>
-      </div>
+    <section class="list" data-col="list" aria-label="All email by priority">
       <div class="cards">
         {% for m in cards %}{{ ui.card(m, show_quad=True) }}{% endfor %}
       </div>
-      {% if total > cards|length %}<p class="more">Showing the top {{ cards|length }}. Search or filter to see the rest.</p>{% endif %}
+      {% if total > cards|length %}<p class="more">Showing the top {{ cards|length }} of {{ total }}. Search or filter to see the rest.</p>{% endif %}
     </section>
   {% else %}
     {% if unsorted.total %}
-    <section class="group q-none" data-col="unsorted">
-      <details open data-key="unsorted">
-        <summary class="col-head">
-          <span class="mark"></span>
-          <span class="titles"><h2>Not sorted yet</h2><span class="sub">Waiting for the AI</span></span>
-          <span class="count">{{ unsorted.total }}</span>
+    {% set done_n = stats.total - stats.unscored %}
+    {% set needed = (stats.unscored + 19) // 20 %}
+    {% set left = [ai_max - ai_calls, 0]|max %}
+    <section class="sorting" data-col="unsorted" aria-labelledby="sorting-title" data-sorted="{{ done_n }}" data-total="{{ stats.total }}">
+      <details data-key="unsorted-v2">
+        <summary class="sorting-sum">
+          <span class="q-glyph q-none"><svg class="ic" aria-hidden="true"><use href="#i-hourglass"/></svg></span>
+          <span class="sorting-main">
+            <span class="sorting-line">
+              <b id="sorting-title">Sorting your mail</b>
+              <span class="sorting-count num" aria-hidden="true">{{ done_n }} of {{ stats.total }} sorted</span>
+            </span>
+            <span class="meter" role="progressbar" aria-label="Sorting progress" aria-valuemin="0" aria-valuemax="{{ stats.total }}" aria-valuenow="{{ done_n }}" aria-valuetext="{{ done_n }} of {{ stats.total }} sorted" style="--p: {{ '%.4f'|format(done_n / stats.total) }}"><span class="meter-fill"></span></span>
+          </span>
+          <span class="sorting-wait num">{{ stats.unscored }} waiting</span>
+          <span class="sorting-review">Review<svg class="ic chev" aria-hidden="true"><use href="#i-chevron"/></svg></span>
+          <span class="sorting-note{% if needed > left %} has-warn{% endif %}">
+            {%- if left == 0 %}<span class="pill warn"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>Daily AI limit reached. Sender rules still work.</span>
+            {%- else %}<span class="sorting-budget">Needs ≈{{ needed }} AI call{{ "" if needed == 1 else "s" }} · {{ left }} left today</span>
+            {%- if needed > left %} <span class="pill warn"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>Today's AI limit covers about {{ left * 20 }} more. The rest sorts after midnight UTC — or sort any email yourself with 1–4.</span>{% endif %}
+            {%- endif %}
+          </span>
         </summary>
-        <div class="cards grid">
-          {% for m in unsorted.cards %}{{ ui.card(m) }}{% endfor %}
+        <div class="sorting-body">
+          {% set ns = namespace(rows=[]) %}
+          {% for g in unsorted.cards|groupby("from_email", default="") %}
+            {% if g.grouper and g.list|length > 1 %}{% set ns.rows = ns.rows + [{"email": g.grouper, "name": g.list[0].sender, "n": g.list|length}] %}{% endif %}
+          {% endfor %}
+          {% if ns.rows %}
+          <div class="senders">
+            <h3 class="mini-title">Top senders waiting <span class="hint-inline">among the newest {{ unsorted.cards|length }}</span></h3>
+            <ul class="sender-rows">
+              {% for s in (ns.rows|sort(attribute="n", reverse=true))[:5] %}
+              <li>
+                <span class="sender-who"><b>{{ s.name }}</b> <span class="addr">{{ s.email }}</span></span>
+                <span class="sender-n num">{{ s.n }}</span>
+                <form class="sender-act" method="post" action="/rules" data-enhance>
+                  <input type="hidden" name="next" value="{{ here }}">
+                  <input type="hidden" name="pattern" value="{{ s.email|lower }}">
+                  <button class="btn btn-secondary sm" name="kind" value="vip" title="Always important (VIP)">Important</button>
+                  <button class="btn btn-secondary sm" name="kind" value="low" title="Always low priority">Low</button>
+                </form>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+          <h3 class="mini-title">Newest waiting</h3>
+          <div class="cards rows">
+            {% for m in unsorted.cards[:12] %}{{ ui.card(m) }}{% endfor %}
+          </div>
+          <a class="more-link" href="{{ f.url(view='list', sorted='no') }}">See all {{ unsorted.total }} in List<svg class="ic" aria-hidden="true"><use href="#i-next"/></svg></a>
         </div>
-        {{ ui.more(unsorted) }}
       </details>
     </section>
     {% endif %}
-    <div class="matrix">
+    <div class="matrix" id="matrix">
       {% for col in columns %}
-      <section class="col q-{{ col.key }}" data-col="{{ col.key }}">
+      {% set shown = col.cards[:8] %}
+      {% set rest = col.cards[8:] %}
+      <section class="col q-{{ col.key }}" data-col="{{ col.key }}" id="col-{{ col.key }}" aria-labelledby="h-{{ col.key }}">
         <details{% if col.key != "later" %} open{% endif %} data-key="{{ col.key }}">
           <summary class="col-head">
-            <span class="mark"></span>
-            <span class="titles"><h2>{{ col.title }}</h2><span class="sub">{{ col.action }}</span></span>
-            <span class="count">{{ col.total }}</span>
+            <span class="q-glyph"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ col.key }}"/></svg></span>
+            <span class="titles"><h2 id="h-{{ col.key }}">{{ ACTIONS[col.key] }}</h2><span class="sub">{{ SUBS[col.key] }}</span></span>
+            <span class="count num"><span aria-hidden="true">{% if col.unread %}<b>{{ col.unread }} new</b> · {% endif %}{{ col.total }}</span><span class="sr-only">{{ col.unread }} unread of {{ col.total }}</span></span>
+            <svg class="ic chev chev-r" aria-hidden="true"><use href="#i-next"/></svg>
           </summary>
           <div class="cards">
-            {% for m in col.cards %}{{ ui.card(m) }}{% else %}<p class="empty">Nothing here.</p>{% endfor %}
+            {% for m in shown %}{{ ui.card(m) }}{% else %}{% if col.key == 'do' and unsorted.total %}<p class="empty-col"><svg class="ic" aria-hidden="true"><use href="#i-hourglass"/></svg>Nothing here yet — {{ unsorted.total }} still being sorted</p>{% else %}<p class="empty-col{% if col.key == 'do' %} ok{% endif %}"><svg class="ic" aria-hidden="true"><use href="{{ '#i-check' if col.key == 'do' else '#i-q-' ~ col.key }}"/></svg>{{ EMPTY[col.key] }}</p>{% endif %}{% endfor %}
           </div>
+          {% if col.cards|length > 6 %}
+          <details class="more-cards{% if not rest %} narrow-only{% endif %}">
+            <summary><span class="n-wide">Show {{ rest|length }} more</span><span class="n-narrow">Show {{ col.cards|length - 6 }} more</span><span class="n-less">Show fewer</span></summary>
+            {% if rest %}<div class="cards">{% for m in rest %}{{ ui.card(m) }}{% endfor %}</div>{% endif %}
+          </details>
+          {% endif %}
           {{ ui.more(col) }}
         </details>
       </section>
       {% endfor %}
     </div>
+    <nav class="dock glass" aria-label="Quadrants">
+      {% for col in columns %}
+      <a class="dock-item q-{{ col.key }}" href="#col-{{ col.key }}" data-col="{{ col.key }}" aria-label="{{ ACTIONS[col.key] }}, {{ col.unread }} unread of {{ col.total }}"><span class="dock-top"><span class="q-glyph"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ col.key }}"/></svg></span><b class="num dock-n{% if not col.unread %} is-total{% endif %}">{{ col.unread or col.total }}</b></span><span class="dock-label">{{ SHORT[col.key] }}</span></a>
+      {% endfor %}
+    </nav>
   {% endif %}
   </div>
   <aside class="pane" id="pane" aria-label="Selected email">{% if msg %}{% include "_detail.html" %}{% endif %}</aside>

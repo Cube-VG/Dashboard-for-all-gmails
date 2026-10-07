@@ -78,6 +78,7 @@ class Filters:
     q: str = ""
     unread: bool = False
     category: str = ""
+    unsorted: bool = False  # ?sorted=no: only mail the AI has not sorted yet
 
     @classmethod
     def from_query(cls, params) -> "Filters":
@@ -87,16 +88,18 @@ class Filters:
             q=params.get("q", "").strip()[:200],
             unread=params.get("unread", "") in ("1", "on", "true"),
             category=params.get("category", "").strip(),
+            unsorted=params.get("sorted", "") == "no",
         )
 
     @property
     def active(self) -> bool:
-        return bool(self.account or self.q or self.unread or self.category)
+        return bool(self.account or self.q or self.unread or self.category or self.unsorted)
 
     def url(self, **changes) -> str:
         """Inbox URL with these filters, overridden by `changes`; empty values are dropped."""
         params = {"view": self.view, "account": self.account, "q": self.q,
-                  "unread": "1" if self.unread else "", "category": self.category, **changes}
+                  "unread": "1" if self.unread else "", "category": self.category,
+                  "sorted": "no" if self.unsorted else "", **changes}
         if params["view"] == "matrix":
             params["view"] = ""
         params = {k: v for k, v in params.items() if v not in ("", None, False)}
@@ -116,6 +119,8 @@ class Filters:
         if self.category:
             clauses.append("m.category = ?")
             args.append(self.category)
+        if self.unsorted:
+            clauses.append("(m.importance IS NULL OR m.urgency IS NULL)")
         return (" WHERE " + " AND ".join(clauses) if clauses else ""), args
 
 
@@ -293,7 +298,7 @@ def _counts(conn, where: str = "", args: list = ()) -> tuple[dict, dict]:
     """Totals per quadrant plus unread/unscored, and which (importance, urgency) pairs
     land in each quadrant (so scoring.quadrant stays the only place that decides)."""
     stats = {"total": 0, "unread": 0, "unscored": 0, "unread_do": 0,
-             "quadrants": dict.fromkeys(GROUPS, 0)}
+             "quadrants": dict.fromkeys(GROUPS, 0), "quadrant_unread": dict.fromkeys(GROUPS, 0)}
     pairs: dict[str, set] = {k: set() for k in GROUPS}
     sql = "SELECT m.importance, m.urgency, m.is_read, COUNT(*) AS n" + FROM + where + " GROUP BY 1, 2, 3"
     for r in conn.execute(sql, args):
@@ -304,6 +309,7 @@ def _counts(conn, where: str = "", args: list = ()) -> tuple[dict, dict]:
             stats["unscored"] += n
             continue
         stats["quadrants"][q] += n
+        stats["quadrant_unread"][q] += 0 if r["is_read"] else n
         pairs[q].add((r["importance"], r["urgency"]))
         if q == "do" and not r["is_read"]:
             stats["unread_do"] += n
@@ -321,7 +327,8 @@ def _matrix(conn, f: Filters) -> tuple[list[dict], dict, int]:
             cond = " OR ".join("(m.importance = ? AND m.urgency = ?)" for _ in found)
             cards = _fetch(conn, where, args, cond, [v for p in found for v in p], COLUMN_LIMIT)
         columns.append({"key": key, "title": QUADRANTS[key], "action": ACTIONS[key],
-                        "cards": cards, "total": stats["quadrants"][key]})
+                        "cards": cards, "total": stats["quadrants"][key],
+                        "unread": stats["quadrant_unread"][key]})
     unsorted = {"key": "unsorted", "total": stats["unscored"], "cards": []}
     if stats["unscored"]:
         unsorted["cards"] = _fetch(conn, where, args, "m.importance IS NULL OR m.urgency IS NULL",
@@ -329,9 +336,14 @@ def _matrix(conn, f: Filters) -> tuple[list[dict], dict, int]:
     return columns, unsorted, stats["total"]
 
 
-def _categories(conn) -> list[str]:
-    return [r[0] for r in conn.execute(
-        "SELECT DISTINCT category FROM messages WHERE category IS NOT NULL AND category != '' ORDER BY 1")]
+def _categories(conn, f: Filters | None = None) -> list[str]:
+    """Categories in the database; with filters, only those that still have mail under the
+    other filters (so the Category menu never offers a dead end)."""
+    where, args = (Filters(account=f.account, q=f.q, unread=f.unread, unsorted=f.unsorted).where()
+                   if f else ("", []))
+    cond = "m.category IS NOT NULL AND m.category != ''"
+    sql = "SELECT DISTINCT m.category" + FROM + (where + " AND " if where else " WHERE ") + cond
+    return [r[0] for r in conn.execute(sql + " ORDER BY 1", args)]
 
 
 def _detail(conn, message_id: int) -> dict | None:
@@ -378,7 +390,7 @@ def _page(request: Request, conn, f: Filters, **extra) -> dict:
                           "unread": unread.get(a["email"], 0)})
     return {
         "f": f, "accounts": accounts, "chips": chips, "stats": _counts(conn)[0],
-        "categories": _categories(conn), "ai_calls": db.ai_calls_today(conn, _utc_day()),
+        "categories": _categories(conn, f), "ai_calls": db.ai_calls_today(conn, _utc_day()),
         "ai_max": config.MAX_AI_CALLS_PER_DAY,
         "here": request.url.path + (f"?{request.url.query}" if request.url.query else ""),
         **extra,
@@ -453,7 +465,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         resp = await call_next(request)
         resp.headers.setdefault("Content-Security-Policy", CSP)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        # same-origin, not no-referrer: under no-referrer browsers send `Origin: null` with
+        # plain form posts, which the guard above has to reject (that broke every no-JS form)
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
         return resp
 
     @app.exception_handler(StarletteHTTPException)
@@ -558,12 +572,15 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             return _reply(request, "Pick a rule type", next_url, ok=False)
         p = _rule_pattern(pattern)
         if p is None:
+            if urlsplit(_safe_next(next_url)).path == "/rules":  # keep what was typed (no-JS path)
+                next_url = "/rules?" + urlencode({"pattern": (pattern or "")[:200], "kind": kind})
             return _reply(request, "Enter a sender address (boss@company.com) or a domain "
                                    "(@company.com)", next_url, ok=False)
         with connect() as conn:
             db.add_rule(conn, kind, p)
             conn.commit()
-        return _reply(request, f"Rule saved: {RULE_KINDS[kind]} for {p}. It applies to new mail.",
+        return _reply(request, f"Rule saved: {RULE_KINDS[kind]} for {p}. "
+                               "It also sorts mail that's still waiting.",
                       next_url, kind=kind, pattern=p)
 
     @app.post("/rules/{rule_id}/delete")

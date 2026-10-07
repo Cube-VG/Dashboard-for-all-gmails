@@ -1,47 +1,63 @@
 {% extends "base.html" %}
 {% block title %}Rules{% endblock %}
+{% block flash %}{% if flash and flash.kind == "err" %}<div id="flash" class="flash-box" aria-live="polite"></div>{% else %}{{ super() }}{% endif %}{% endblock %}
 {% block content %}
 {% set help = {
   "vip": "Mail from these senders is always treated as important.",
   "low": "Mail from these senders is always treated as low priority.",
   "private": "Mail from these senders is never sent to the AI. Rules score it instead.",
 } %}
-<div class="page">
-  <h1>Sender rules</h1>
-  <p class="muted">Rules run before the AI, cost nothing, and apply to newly synced mail. A pattern is a full address (<code>boss@company.com</code>) or a whole domain (<code>@company.com</code>).</p>
+{% set GLYPH = {"vip": "i-q-do", "low": "i-q-later", "private": "i-lock"} %}
+{# after a rejected "Add rule" without JS, the server sends the input back so nothing is lost (Postel) #}
+{% set typed = request.query_params.get("pattern", "")[:200] %}
+{% set picked = request.query_params.get("kind", "") if request.query_params.get("kind", "") in RULE_KINDS else (RULE_KINDS|list)[0] %}
+<div class="page rules-page">
+  <a class="btn btn-text back-btn" href="/"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span>Inbox</span></a>
+  <h1 class="title">Sender rules</h1>
+  <p class="intro">Rules run before the AI, cost nothing, and also sort mail that's still waiting. Use a full address (<code>boss@company.com</code>) or a whole domain (<code>@company.com</code>).</p>
 
   <form class="rule-add" method="post" action="/rules" data-enhance>
     <input type="hidden" name="next" value="/rules">
-    <label>Rule
-      <select name="kind">{% for k, label in RULE_KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
-    </label>
-    <label class="grow">Sender or domain
-      <input name="pattern" required placeholder="boss@company.com or @bank.com" autocomplete="off">
-    </label>
-    <button class="btn primary">Add rule</button>
+    <fieldset class="seg-radio">
+      <legend>Rule</legend>
+      {% for k, label in RULE_KINDS.items() %}
+      <label><input type="radio" name="kind" value="{{ k }}"{% if k == picked %} checked{% endif %}><span>{{ label }}</span></label>
+      {% endfor %}
+    </fieldset>
+    <div class="rule-add-row">
+      <label class="field grow">Sender or domain
+        <input name="pattern" value="{{ typed }}" required placeholder="boss@company.com or @bank.com" autocomplete="off" inputmode="email" autocapitalize="off" spellcheck="false"{% if flash and flash.kind == "err" %} aria-invalid="true" aria-describedby="rule-error"{% endif %}>
+      </label>
+      <button class="btn btn-primary">Add rule</button>
+    </div>
+    {% if flash and flash.kind == "err" %}<p class="field-error" id="rule-error" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>{{ flash.text }}</p>{% endif %}
   </form>
 
   {% for kind, label in RULE_KINDS.items() %}
-  <section class="rule-group rule-{{ kind }}">
-    <h2>{{ label }} <span class="count">{{ rules[kind]|length }}</span></h2>
+  <div class="rule-group rule-{{ kind }}">
+    <div class="rule-group-head">
+      <span class="q-glyph {{ 'q-do' if kind == 'vip' else 'q-later' if kind == 'low' else 'q-private' }}"><svg class="ic" aria-hidden="true"><use href="#{{ GLYPH[kind] }}"/></svg></span>
+      <h2>{{ label }}</h2>
+      <span class="count-chip num">{{ rules[kind]|length }}</span>
+    </div>
     <p class="hint">{{ help[kind] }}</p>
     {% if rules[kind] %}
     <ul class="rules">
       {% for r in rules[kind] %}
-      <li>
-        <span class="pattern">{{ r.pattern }}</span>
-        <span class="muted">{{ r.matches }} email{{ "" if r.matches == 1 else "s" }} · added {{ r.created_at[:10] }}</span>
+      <li data-kind="{{ r.kind }}" data-pattern="{{ r.pattern }}">
+        <span class="rule-text"><span class="pattern">{{ r.pattern }}</span>
+        <span class="muted">{{ r.matches }} email{{ "" if r.matches == 1 else "s" }} · added {{ r.created_at[:10] }}</span></span>
         <form method="post" action="/rules/{{ r.id }}/delete" data-enhance>
           <input type="hidden" name="next" value="/rules">
-          <button class="btn ghost danger" aria-label="Delete rule {{ r.pattern }}">Delete</button>
+          <button class="btn btn-secondary danger" aria-label="Remove rule {{ r.pattern }}">Remove</button>
         </form>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="empty">None yet.</p>
+    <p class="empty-col">None yet.</p>
     {% endif %}
-  </section>
+  </div>
   {% endfor %}
 </div>
 {% endblock %}
