@@ -205,8 +205,8 @@ fi
 say "Done: the VM is in your Tailscale as '$TSNAME'"
 echo "Two one-time clicks, so it keeps running for good:"
 echo "  1. Tailscale: https://login.tailscale.com/admin/machines -> '$TSNAME' -> ... -> Disable key expiry"
-echo "  2. Google, if your account is on the free trial: click Activate (or Upgrade) in the banner at the"
-echo "     top of https://console.cloud.google.com . Otherwise Google stops the VM when the 90-day trial"
+echo "  2. Google, if your account is on the free trial: https://console.cloud.google.com/welcome ->"
+echo "     Activate (top toolbar) -> Activate. Otherwise Google stops the VM when the 90-day trial"
 echo "     ends. The e2-micro stays free after that, and the safety alarm emails you if anything costs money."
 echo
 echo "Then, on your Mac, in the dashboard-for-all-gmails folder:"

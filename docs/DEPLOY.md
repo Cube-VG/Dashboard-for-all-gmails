@@ -34,10 +34,15 @@ Free-tier terms change. Check [cloud.google.com/free](https://cloud.google.com/f
 1. Sign up at [console.cloud.google.com](https://console.cloud.google.com).
    - Google asks for a card to verify you. The free VM doesn't charge it.
    - Make sure a project is selected at the top (new accounts get "My First Project").
-   - ⚠️ **New accounts start on a 90-day free trial.** Click **Activate** (or **Upgrade**) in the banner
-     at the top of the console. Otherwise Google stops the VM when the trial ends and deletes it, with
-     your mail, 30 days later. The `e2-micro` stays free after activating, and the budget alarm below
-     emails you if anything ever costs money.
+   - ⚠️ **New accounts start on a 90-day free trial.** Open the console's
+     [Welcome page](https://console.cloud.google.com/welcome), click **Activate** in its toolbar, then
+     **Activate** again to confirm. (The [Billing page](https://console.cloud.google.com/billing) has the
+     same button in its "Free credit" box.) Otherwise Google stops the VM when the trial ends and
+     deletes it, with your mail, 30 days later. The `e2-micro` stays free after activating, and the
+     budget alarm below emails you if anything ever costs money.
+   - No **Activate** button? Either the account is already activated (nothing to do), or billing was
+     never set up: open the [Billing page](https://console.cloud.google.com/billing), create a billing
+     account, then come back here.
 2. On your **Mac**, put the VM script on the clipboard as one line:
    ```
    cd ~/Documents/dashboard-for-all-gmails && git pull
@@ -126,7 +131,7 @@ The app starts by itself when the VM boots and restarts itself if it ever crashe
 | `push-to-vm.sh` says "This Mac can't look up that address" | In the Tailscale menu-bar app's settings, turn on **Use Tailscale DNS settings**; check MagicDNS is on at [admin/dns](https://login.tailscale.com/admin/dns) |
 | `push-to-vm.sh` says inbox's login expired | [admin/machines](https://login.tailscale.com/admin/machines) → inbox → ⋯ → **Temporarily extend key**, then **Disable key expiry** |
 | `push-to-vm.sh` says inbox is offline, even after a Reset | Make a new auth key; in Cloud Shell run `bash create-vm.sh --rejoin tskey-auth-NEW-KEY` |
-| The dashboard stopped about 3 months after setup | The Google free trial ended. Click **Activate** in the console within 30 days, then start the VM: Compute Engine → VM instances → inbox → Start |
+| The dashboard stopped about 3 months after setup | The Google free trial ended. Click **Activate** on the console's [Welcome page](https://console.cloud.google.com/welcome) within 30 days, then start the VM: Compute Engine → VM instances → inbox → Start |
 | ssh says the tailnet policy doesn't permit it | In Tailscale's **Access controls**, keep the default `"ssh"` rule (members may SSH to their own devices) |
 | A mailbox shows ✗ after the push | Run `bash deploy/push-to-vm.sh --settings` again; for Gmail, check the App Password still exists |
 
