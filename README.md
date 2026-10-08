@@ -24,7 +24,6 @@ Open **Terminal** (Cmd+Space, type "Terminal").
    cd ~/Documents
    git clone https://github.com/cube-vg/dashboard-for-all-gmails.git
    cd dashboard-for-all-gmails
-   git checkout claude/dreamy-wright-isuy3u
    python3.14 -m venv .venv
    source .venv/bin/activate
    python --version              # must say 3.14.x
