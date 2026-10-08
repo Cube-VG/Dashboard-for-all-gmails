@@ -256,6 +256,8 @@ details[open] > summary .chev-r { transform: rotate(90deg); }
 }
 .btn:disabled:active, .btn[aria-disabled="true"]:active { transform: none; }
 
+@supports not (transition-timing-function: linear(0, 1)) { :root { --spring: cubic-bezier(0.32, 0.72, 0, 1); } }
+
 /* ===== 5. App bar (Gmail: menu, logo, wide search, settings) ============================ */
 :root { --top-h: 64px; --side-w: 256px; --rail-w: 72px; }
 .top {
@@ -378,8 +380,9 @@ html:not(.js) .keys-item { display: none; } /* single-key shortcuts need app.js 
 .nav-status .problem .ic { width: 1rem; height: 1rem; color: var(--warning-glyph); }
 @media (hover: hover) and (pointer: fine) { .nav-status:hover { background: var(--fill-press); } }
 .sidebar .status-wrap > .menu { top: auto; bottom: calc(100% + 4px); left: 12px; right: auto; transform-origin: bottom left; }
-.scrim { position: fixed; inset: 0; z-index: 44; background: rgb(14 15 12 / .32); -webkit-tap-highlight-color: transparent; touch-action: pan-y; }
+.scrim { position: fixed; inset: 0; z-index: 44; background: rgb(14 15 12 / .32); -webkit-tap-highlight-color: transparent; touch-action: pan-y pinch-zoom; }
 .sidebar.moving { will-change: transform, clip-path; }
+.zoomed .scrim, .zoomed .sidebar.open, .zoomed .pane, .zoomed .compose-head { touch-action: auto !important; }
 /* collapsed rail: icons only (desktop menu button; the default between 768 and 1023px) */
 :root[data-rail="on"] .shell { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
 :root[data-rail="on"] .sidebar { padding-right: 0; }
@@ -689,7 +692,7 @@ body[data-page="matrix"] main .sorting { background: var(--surface); }
    "2 new" becomes "2" (the word stays for screen readers), then the icons go */
 @media (min-width: 768px) {
   @container (max-width: 860px) {
-    .tab { padding: 0 12px; gap: 8px; }
+    .tab { flex: 1 1 auto; padding: 0 12px; gap: 8px; }
     .tab-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   }
   @container (max-width: 640px) { .tab .q-glyph { display: none; } }
@@ -793,7 +796,7 @@ body[data-page="matrix"] main .sorting { background: var(--surface); }
 }
 /* phones: the email slides in over the list like an iOS push (app.js drives it with a spring) */
 .pane.moving { will-change: transform; box-shadow: -12px 0 32px rgb(14 15 12 / .18); }
-.board.moving { will-change: transform; }
+.board > .moving { will-change: transform; }
 /* split: list left, email right (Quick settings → Reading pane on the right) */
 @media (min-width: 1280px) {
   :root[data-split="on"] .layout.with-pane { display: grid; grid-template-columns: minmax(0, 1fr) clamp(440px, 46%, 760px); align-items: start; }
@@ -1065,8 +1068,10 @@ html:not(.js) .flash.ok { animation: flash-away 1ms linear 8s forwards; }
   box-shadow: 0 8px 10px 1px rgb(0 0 0 / .14), 0 3px 14px 2px rgb(0 0 0 / .12), 0 5px 5px -3px rgb(0 0 0 / .2), 0 0 0 1px var(--line);
 }
 @starting-style { .compose-window { transform: translateY(32px) scale(.98); opacity: 0; } }
-.compose-window { transform-origin: bottom right; view-transition-name: compose-window;
+.compose-window { transform-origin: bottom right;
   transition: transform var(--d-spring) var(--spring), opacity 180ms linear; }
+.compose-window > :not(.compose-head) { transition: opacity 200ms linear; }
+@starting-style { .compose-window > :not(.compose-head) { opacity: 0; } }
 .compose-window.leaving { transform: translateY(32px) scale(.98); opacity: 0; pointer-events: none;
   transition: transform 260ms var(--ease-out), opacity 200ms linear; }
 .compose-window.dragging { transition: none; }
@@ -1083,7 +1088,7 @@ html:not(.js) .flash.ok { animation: flash-away 1ms linear 8s forwards; }
 .compose-window.maximized {
   position: fixed; z-index: 56; inset: 6vh 8vw; width: auto; height: auto; border-radius: var(--r-lg);
 }
-.compose-dock:has(.maximized)::before { content: ""; position: fixed; inset: 0; background: rgb(14 15 12 / .4); pointer-events: auto; }
+.compose-dock:has(.maximized:not(.leaving))::before { content: ""; position: fixed; inset: 0; background: rgb(14 15 12 / .4); pointer-events: auto; }
 @starting-style { .compose-inline { opacity: 0; transform: translateY(8px); } }
 .compose-inline.leaving { opacity: 0; transform: translateY(8px); pointer-events: none; transition-duration: 160ms, 220ms; }
 .compose-inline { transition: opacity 200ms linear, transform var(--d-spring) var(--spring); }
@@ -1197,7 +1202,8 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .sidebar:not(.open) .nav-item { width: 48px; margin-left: 12px; padding: 0; justify-content: center; border-radius: var(--r-pill); }
   .sidebar:not(.open) .nav-group { display: none; }
   .sidebar { padding-right: 0; }
-  .sidebar.open { position: fixed; z-index: 45; top: 0; bottom: 0; left: 0; width: min(300px, 86vw); max-height: none;
+  .sidebar.dragging { -webkit-user-select: none; user-select: none; }
+  .sidebar.open { touch-action: pan-y pinch-zoom; position: fixed; z-index: 45; top: 0; bottom: 0; left: 0; width: min(300px, 86vw); max-height: none;
     align-self: stretch; overflow-y: auto; padding: max(8px, env(safe-area-inset-top)) 12px max(24px, env(safe-area-inset-bottom)) 0;
     background: var(--bg); box-shadow: var(--shadow-pane); }
   .row-link { grid-template-columns: 150px minmax(0, 1fr) auto; }
@@ -1220,8 +1226,8 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .search-ic { left: 15px; }
   .shell { display: block; }
   .js .sidebar { display: none; }
-  .js .sidebar.open { display: flex; touch-action: pan-y; }
-  .sidebar.dragging, .pane.dragging { -webkit-user-select: none; user-select: none; }
+  .js .sidebar.open { display: flex; }
+  .pane.dragging { -webkit-user-select: none; user-select: none; }
   html:not(.js) .sidebar { position: static; max-height: none; padding: 4px 0 12px; } /* no drawer without JavaScript */
   html:not(.js) .menu-btn { display: none; }
   .board { padding-bottom: calc(88px + env(safe-area-inset-bottom)); } /* the last email clears the Compose button */
@@ -1270,7 +1276,7 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   @starting-style { .compose-window { transform: translateY(100%); opacity: 1; } }
   .compose-window { transform-origin: center bottom; transition: transform var(--d-spring) var(--spring); }
   .compose-window.leaving { transform: translateY(100%); opacity: 1; transition: transform 320ms var(--ease-out); }
-  .compose-window:not(.minimized) .compose-head { touch-action: none; }
+  .compose-window:not(.minimized) .compose-head { touch-action: pinch-zoom; }
   .compose-head { min-height: 52px; padding-top: env(safe-area-inset-top); }
   [data-compose-max] { display: none; }
   .fab {
@@ -1317,7 +1323,8 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   @view-transition { navigation: auto; }
   ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 200ms; }
   ::view-transition-group(moved-card) { animation-duration: 300ms; animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1); }
-  ::view-transition-group(tab-ind), ::view-transition-group(compose-window) { animation-duration: var(--d-spring-fast); animation-timing-function: var(--spring); }
+  ::view-transition-group(tab-ind) { animation-duration: var(--d-spring-fast); animation-timing-function: var(--spring); }
+  html.vt-local .tab-ind { view-transition-name: none !important; } /* in-page transitions: only the root fades */
   ::view-transition-old(tab-ind), ::view-transition-new(tab-ind) { height: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1328,7 +1335,6 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .new-pill:active { transform: translateX(-50%); }
   .card.leaving { transform: none; }
   .menu-wrap > .menu, .sheet, .flash, .pane, .compose-window { transition-property: opacity; transition-duration: 150ms; }
-  @starting-style { .compose-window { transform: none; } }
   .compose.writing .compose-body { animation: none; }
   @starting-style { .menu-wrap[open] > .menu { transform: none; } }
   @starting-style { .flash { transform: none; } }
@@ -1340,6 +1346,10 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .sidebar.open, .scrim { transition: opacity 150ms linear; }
   @starting-style { .sidebar.open, .scrim { opacity: 0; } }
   .compose-window.leaving, .compose-inline.leaving { transform: none; }
+  .compose-window.leaving { opacity: 0; transition: opacity 150ms linear; }
+  @starting-style { .compose-window { transform: none; opacity: 0; } }
+  @starting-style { :root[data-split="on"] .layout.pane-enter .pane { transform: none; } }
+  :root[data-split="on"] .layout.pane-out .pane { transform: none; }
   @starting-style { .compose-inline, .cc-row, .help-write, .layout.board-enter .board { transform: none; } }
   .fab, .fab span { transition: none; }
   .meter-fill { transition: none; }

@@ -76,7 +76,8 @@
   let dragEndedAt = -Infinity;
   function drag({ axis = "x", grab, start, move, end }) {
     document.addEventListener("pointerdown", (e) => {
-      if (!e.isPrimary || e.button !== 0) return;
+      // fingers and pens only (a mouse selects text), and never while the page is pinch-zoomed
+      if (!e.isPrimary || e.button !== 0 || e.pointerType === "mouse" || zoomed()) return;
       const el = grab(e);
       if (!el) return;
       const x0 = e.clientX, y0 = e.clientY;
@@ -122,12 +123,25 @@
   document.addEventListener("click", (e) => {
     if (performance.now() - dragEndedAt < 350) { e.preventDefault(); e.stopPropagation(); dragEndedAt = -Infinity; }
   }, true);
+  // only the click a drag itself produces is cancelled: a new press is a real tap
+  document.addEventListener("pointerdown", () => { dragEndedAt = -Infinity; }, true);
+  // pinch-zoomed: sideways pans move the zoomed page, so the swipe gestures stand aside
+  const zoomed = () => !!window.visualViewport && window.visualViewport.scale > 1.01;
+  window.visualViewport?.addEventListener("resize", () => root.classList.toggle("zoomed", zoomed()));
   // run a DOM change as a morph (minimise / maximise, theme) where the browser can
   function morph(update) {
     if (document.startViewTransition && !reduceMotion.matches) {
-      try { document.startViewTransition(update); return; } catch { /* fall through */ }
+      try { return localTransition(update); } catch { root.classList.remove("vt-local"); /* fall through */ }
     }
     update();
+    return null;
+  }
+  // a view transition inside this page: only the root cross-fades (plus any one-off names)
+  function localTransition(update) {
+    root.classList.add("vt-local");
+    const vt = document.startViewTransition(update);
+    vt.finished.finally(() => root.classList.remove("vt-local")).catch(() => {});
+    return vt;
   }
 
   // --- display preferences (⋯ menu and shortcut sheet switches) -------------------------
@@ -182,7 +196,7 @@
   }
   document.addEventListener("toggle", (e) => {
     const d = e.target;
-    if (d instanceof HTMLDetailsElement && d.dataset.key) store.set("col:" + d.dataset.key, d.open ? "1" : "0");
+    if (d instanceof HTMLDetailsElement && d.dataset.key) store.set("col:" + d.dataset.key, d.open && !d.classList.contains("shutting") ? "1" : "0");
   }, true);
 
   // --- menus: light dismiss, one at a time, exit the way they came in ----------------------
@@ -212,9 +226,13 @@
   }, true);
 
   // --- disclosures (Categories, panels, quoted text, Sent rows): grow and shrink on a spring --
-  const SPRING = getComputedStyle(root).getPropertyValue("--spring").trim() || "cubic-bezier(0.32, 0.72, 0, 1)";
+  const SPRING = (() => {
+    const css = getComputedStyle(root).getPropertyValue("--spring").trim();
+    return css && window.CSS?.supports?.("transition-timing-function", css) ? css : "cubic-bezier(0.32, 0.72, 0, 1)";
+  })();
   function toggleDetails(d) {
     const opening = !d.open || d.classList.contains("shutting");
+    if (d.dataset.key) store.set("col:" + d.dataset.key, opening ? "1" : "0");
     const from = d.getBoundingClientRect().height; // mid-animation: from where it is now
     d._anim?.cancel();
     d.classList.remove("shutting");
@@ -226,8 +244,13 @@
     if (!opening) d.classList.add("shutting");
     const to = opening ? full : shut;
     d.style.overflow = "hidden";
-    const anim = d.animate([{ height: from + "px" }, { height: to + "px" }],
-      { duration: opening ? 480 : 360, easing: SPRING });
+    let anim;
+    try {
+      anim = d.animate([{ height: from + "px" }, { height: to + "px" }], { duration: opening ? 480 : 360, easing: SPRING });
+    } catch {
+      d.style.overflow = ""; d.classList.remove("shutting"); d.open = opening;
+      return;
+    }
     d._anim = anim;
     anim.onfinish = () => {
       d._anim = null;
@@ -243,6 +266,20 @@
     e.preventDefault();
     toggleDetails(d);
   });
+
+  // --- page changes: the tab underline glides only when it's really in view ---------------
+  // (a named element is drawn above everything during the transition, so one hidden under the
+  // sticky bar, behind an open email or the menu would float over them)
+  function nameTabIndOnlyInView() {
+    const ind = $(".tab[aria-current] .tab-ind");
+    if (!ind) return;
+    const r = ind.getBoundingClientRect();
+    const barBottom = $(".top")?.getBoundingClientRect().bottom ?? 0;
+    const hidden = !r.width || r.top < barBottom || r.bottom > innerHeight || paneOpen() || drawerOpen() || !!$(".compose-window:not(.minimized):not(.leaving)");
+    ind.style.viewTransitionName = hidden ? "none" : "";
+  }
+  window.addEventListener("pageswap", (e) => { if (e.viewTransition) nameTabIndOnlyInView(); });
+  window.addEventListener("pagereveal", (e) => { if (e.viewTransition) nameTabIndOnlyInView(); });
 
   // --- shortcut sheet (popover; works without JS in Safari 17+) ----------------------------
   const sheet = () => $("#keys");
@@ -422,7 +459,7 @@
       focusId: !card && a && a.id && a !== document.body ? a.id : null,
       focusInPane: !!(a && $("#pane")?.contains(a)),
       hadFocus: !!(a && a !== document.body),
-      more: $$("section.col").filter((c) => $(".more-cards[open]", c)).map((c) => c.dataset.col),
+      more: $$("section.col").filter((c) => $(".more-cards[open]:not(.shutting)", c)).map((c) => c.dataset.col),
     };
   }
   function restoreState(s, focusSubject) {
@@ -489,7 +526,7 @@
     const old = moved ? cardEl(moved) : null;
     if (old && document.startViewTransition && !reduceMotion.matches && old.getClientRects().length) {
       old.style.viewTransitionName = "moved-card";
-      const vt = document.startViewTransition(apply);
+      const vt = localTransition(apply);
       try { await vt.updateCallbackDone; } catch { /* the DOM is updated either way */ }
       vt.finished.finally(() => { const c = cardEl(moved); if (c) c.style.viewTransitionName = ""; }).catch(() => {});
     } else {
@@ -604,16 +641,16 @@
       pane.style.transform = moving || q <= 0 ? `translate3d(${((1 - q) * 100).toFixed(3)}%, 0, 0)` : "";
       pane.classList.toggle("moving", moving);
     }
-    if (board) {
-      board.style.transform = moving ? `translate3d(${(-q * 28).toFixed(3)}%, 0, 0)` : "";
-      board.classList.toggle("moving", moving);
+    // the list drifts left beneath; its parts move, not #board, so the fixed matrix dock stays put
+    for (const part of board ? $$(":scope > :not(.dock)", board) : []) {
+      part.style.transform = moving ? `translate3d(${(-q * 28).toFixed(3)}%, 0, 0)` : "";
+      part.classList.toggle("moving", moving);
     }
   }
   function settlePane() {
     const pane = $("#pane");
-    const board = $("#board");
     if (pane) { pane.style.transform = ""; pane.classList.remove("moving"); }
-    if (board) { board.style.transform = ""; board.classList.remove("moving"); }
+    for (const part of $$("#board > :not(.dock)")) { part.style.transform = ""; part.classList.remove("moving"); }
   }
   async function openMessage(id, href, { push = true, focus = false } = {}) {
     const pane = $("#pane");
@@ -704,7 +741,7 @@
   }
 
   let listY = 0;
-  function closePane(href, { push = true, focusBack = true, velocity } = {}) {
+  function closePane(href, { push = true, focusBack = true, velocity, instant = false } = {}) {
     const pane = $("#pane");
     const layout = $("#layout");
     if (push && href) history.pushState(null, "", href);
@@ -725,6 +762,9 @@
       if (!reduceMotion.matches) { layout.classList.add("board-enter"); setTimeout(() => layout.classList.remove("board-enter"), 600); }
       done();
       window.scrollTo({ top: listY });
+    } else if (instant) {
+      paneSpring.set(0);
+      done();
     } else if (pushes()) {
       // opened with the page (no spring ran yet): it starts from fully open; a swipe hands over its speed
       if (!paneSpring.moving() && velocity === undefined) paneSpring.set(1);
@@ -784,11 +824,12 @@
     }
   });
 
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (e) => {
     if (!$("#pane")) return;
     const id = new URLSearchParams(location.search).get("open");
-    if (id) { if (id !== openId()) openMessage(id, location.href, { push: false }); }
-    else if ($("#layout.with-pane")) closePane(null, { push: false, focusBack: false });
+    if (id) { if (id !== openId() || !paneOpen()) openMessage(id, location.href, { push: false }); }
+    // after Safari's own edge swipe-back the email is already gone from view: no second slide
+    else if ($("#layout.with-pane")) closePane(null, { push: false, focusBack: false, instant: !!e.hasUAVisualTransition });
   });
 
   // --- actions -------------------------------------------------------------------------------
@@ -1344,14 +1385,15 @@
       scrim?.setAttribute("hidden", "");
     }
     if (side) { side.style.transform = ""; side.style.clipPath = ""; side.classList.remove("moving"); }
-    if (scrim) scrim.style.opacity = "";
+    if (scrim) { scrim.style.opacity = ""; scrim.style.pointerEvents = ""; }
   }
   function openDrawer() {
     const side = $("#sidebar");
     if (!side) return;
     drawerIsOpen = true;
     if (!side.classList.contains("open")) { drawerSpring.set(0); side.classList.add("open"); paintDrawer(0); }
-    $(".scrim")?.removeAttribute("hidden");
+    const scrim = $(".scrim");
+    if (scrim) { scrim.removeAttribute("hidden"); scrim.style.pointerEvents = ""; }
     $("[data-drawer]")?.setAttribute("aria-expanded", "true");
     syncModal();
     $(".nav-item[aria-current], .compose-btn", side)?.focus({ preventScroll: true });
@@ -1363,6 +1405,8 @@
     if (!side?.classList.contains("open")) return;
     const wasOpen = drawerIsOpen;
     drawerIsOpen = false;
+    const scrim = $(".scrim");
+    if (scrim) scrim.style.pointerEvents = "none"; // while it fades, taps reach the page beneath
     $("[data-drawer]")?.setAttribute("aria-expanded", "false");
     syncModal();
     if (wasOpen && (side.contains(document.activeElement) || document.activeElement === document.body)) {
@@ -1378,7 +1422,9 @@
     grab: (e) => (drawerIsOpen && !wide.matches && !reduceMotion.matches
       ? e.target.closest?.("#sidebar.open, .scrim:not([hidden])") : null),
     start: () => {
-      drawerW = $("#sidebar")?.getBoundingClientRect().width || 300;
+      // tablets reveal everything right of the icon rail, so that's the distance a finger covers
+      const w = $("#sidebar")?.getBoundingClientRect().width || 300;
+      drawerW = phone.matches ? w : Math.max(120, w - 72);
       drawerFrom = drawerSpring.value; // caught mid-flight: it moves on from there
       drawerSpring.set(drawerFrom);
     },
@@ -1417,6 +1463,7 @@
     el.classList.remove("dragging");
     el.style.transform = ""; // a dragged sheet leaves from where the finger let go
     el.classList.add("leaving");
+    if (el.contains(document.activeElement)) document.activeElement.blur();
     el.inert = true;
     setTimeout(() => el.remove(), reduceMotion.matches ? 160 : 340);
   }
@@ -1722,9 +1769,9 @@
     if (!form) return;
     if (t.closest("[data-show-cc]")) { showCc(form); form.elements.cc?.focus(); return; }
     if (t.closest("[data-help-toggle]")) { toggleHelp(form); return; }
-    if (t.closest("[data-compose-min]")) { morph(() => { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); }); return; }
-    if (t.closest("[data-compose-max]")) { morph(() => { form.classList.toggle("maximized"); form.classList.remove("minimized"); }); return; }
-    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { morph(() => { form.classList.remove("minimized"); syncModal(); }); focusCompose(form); return; }
+    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); return; }
+    if (t.closest("[data-compose-max]")) { form.classList.toggle("maximized"); form.classList.remove("minimized"); return; }
+    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); syncModal(); focusCompose(form); return; }
     if (t.closest("[data-compose-close]")) { closeWindowKeepingDraft(form); return; }
     if (t.closest("[data-compose-discard]")) {
       e.preventDefault();
@@ -1737,9 +1784,13 @@
     }
   });
   // phone: Back closes the full-screen compose (the draft is kept), like Gmail's app
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (e) => {
     const win = composeWindow();
-    if (win && history.state?.compose !== 1) { saveDraft(win); win.dataset.sent = "closed"; leave(win); syncModal(); }
+    if (win && history.state?.compose !== 1) {
+      saveDraft(win); win.dataset.sent = "closed";
+      if (e.hasUAVisualTransition) win.remove(); else leave(win);
+      syncModal();
+    }
   });
   // leaving the page keeps what was typed in the last moment
   window.addEventListener("pagehide", () => $$("form[data-compose]").forEach(saveDraft));
