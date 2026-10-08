@@ -82,12 +82,30 @@ def listed(env, **params) -> list[int]:
     return columns(r.text).get("list", [])
 
 
-def test_matrix_groups_and_sorts(env):
+def test_inbox_tabs_like_gmail(env):
+    i = env.ids
     r = env.client.get("/")
+    assert r.status_code == 200
+    assert columns(r.text) == {"do": [i["Contract needs signature"], i["Server down!"]]}  # Do now tab
+    assert 'class="tab q-do" href="/" aria-current="page"' in r.text
+    assert 'href="/?tab=schedule"' in r.text and 'href="/?tab=unsorted"' in r.text
+    assert '<span class="tab-new num">1 new</span>' in r.text  # unread in Do now
+    assert "2 waiting" in r.text  # the Not sorted tab
+    r = env.client.get("/", params={"tab": "schedule"})
+    assert columns(r.text) == {"schedule": [i["Budget review"], i["Quarterly planning"]]}
+    r = env.client.get("/", params={"tab": "unsorted"})
+    assert columns(r.text) == {"unsorted": [i["<script>alert(1)</script>"], i["Order #42 refund request"]]}
+    assert env.client.get("/", params={"tab": "bogus"}).status_code == 200  # falls back to Do now
+    # sidebar: Compose, mailboxes, accounts as labels
+    assert 'class="compose-btn"' in r.text and 'href="/sent"' in r.text and 'href="/?view=matrix"' in r.text
+    assert 'data-email="info@shop.example"' in r.text
+
+
+def test_matrix_groups_and_sorts(env):
+    r = env.client.get("/", params={"view": "matrix"})
     assert r.status_code == 200
     i = env.ids
     assert columns(r.text) == {
-        "unsorted": [i["<script>alert(1)</script>"], i["Order #42 refund request"]],  # newest first
         "do": [i["Contract needs signature"], i["Server down!"]],
         "schedule": [i["Budget review"], i["Quarterly planning"]],  # same score: newest first
         "quick": [i["Your code is 123456"]],
@@ -110,7 +128,7 @@ def test_list_view_sorts_by_priority_then_date(env):
 
 
 def test_card_details(env):
-    html = env.client.get("/").text
+    html = env.client.get("/", params={"view": "all"}).text
     assert "Boss needs the contract signed today" in html  # AI summary
     assert "due today" in html and 'class="chip due soon"' in html
     assert "Direct request with a deadline" in html and "scored by Gemma" in html
@@ -138,12 +156,12 @@ def test_filters(env):
 
 
 def test_filters_apply_to_matrix_and_are_kept_across_views(env):
-    r = env.client.get("/", params={"account": "info@shop.example"})
+    r = env.client.get("/", params={"view": "matrix", "account": "info@shop.example"})
     cols = columns(r.text)
     assert cols["do"] == [env.ids["Server down!"]] and cols["schedule"] == []
-    assert 'href="/?view=list&amp;account=info%40shop.example"' in r.text
-    r = env.client.get("/", params={"view": "list", "q": "x", "unread": "1"})
-    assert 'href="/?q=x&amp;unread=1"' in r.text  # back to matrix keeps filters
+    r = env.client.get("/", params={"view": "all", "q": "x", "unread": "1"})
+    assert 'href="/?view=all&amp;q=x"' in r.text  # removing one filter keeps the view and the rest
+    assert 'href="/?view=all&amp;account=me%40gmail.com&amp;q=x&amp;unread=1"' in r.text  # account label
     assert "Clear filters" in r.text
 
 
@@ -183,9 +201,9 @@ def test_detail_fragment_and_open_pane(env):
     assert 'href="/?view=list" data-close' in r.text
     r = env.client.get(f"/message/{mid}", params={"partial": "1", "next": "//evil.example/"})
     assert 'value="//evil.example/"' not in r.text
-    r = env.client.get("/", params={"open": mid})
+    r = env.client.get("/", params={"tab": "schedule", "open": mid})
     assert 'class="layout with-pane"' in r.text
-    assert f'class="card unread active" data-id="{mid}"' in r.text
+    assert f'class="card row unread active" data-id="{mid}"' in r.text
     assert env.client.get("/message/9999").status_code == 404
     assert "Message not found" in env.client.get("/message/9999", headers={"Accept": "text/html"}).text
 
@@ -194,7 +212,8 @@ def test_score_correction_writes_feedback_and_moves_card(env):
     mid = env.ids["Quarterly planning"]
     r = env.client.post(f"/message/{mid}/score", data={"move": "do", "next": "/"})
     assert r.status_code == 200 and "Moved to “Do now”" in r.text  # flash after redirect
-    assert mid in columns(r.text)["do"] and mid not in columns(r.text)["schedule"]
+    assert mid in columns(r.text)["do"]
+    assert mid not in columns(env.client.get("/?tab=schedule").text).get("schedule", [])
     fb = query(env, "SELECT * FROM feedback WHERE message_id = ?", mid)
     assert [(f["old_importance"], f["old_urgency"], f["new_importance"], f["new_urgency"]) for f in fb] == [(5, 2, 5, 5)]
     assert query(env, "SELECT scored_by FROM messages WHERE id = ?", mid)[0][0] == "user"
@@ -206,7 +225,7 @@ def test_score_correction_writes_feedback_and_moves_card(env):
                         "quadrant": "later"}
     row = query(env, "SELECT importance, urgency, category FROM messages WHERE id = ?", mid)[0]
     assert tuple(row) == (1, 2, "finance")
-    assert mid in columns(env.client.get("/").text)["later"]
+    assert mid in columns(env.client.get("/?tab=later").text)["later"]
 
 
 @pytest.mark.parametrize("data", [
@@ -359,8 +378,8 @@ def test_static_files_are_local(env):
 
 
 def test_board_head_columns_and_dock(env):
-    html = env.client.get("/").text
-    assert '<h1 class="hero"><span class="num">1</span> to do now</h1>' in html  # same number as the tab badge
+    html = env.client.get("/", params={"view": "matrix"}).text
+    assert "<title>(1) " in html  # unread in Do now, same number as the tab badge
     do = html.split('data-col="do"', 1)[1].split("</section>", 1)[0]
     assert "<b>1 new</b> · 2" in do and "1 unread of 2" in do
     assert 'class="dock glass"' in html and 'href="#col-do"' in html
@@ -371,21 +390,21 @@ def test_board_head_columns_and_dock(env):
 
 
 def test_sorting_strip_replaces_the_unsorted_wall(env):
-    html = env.client.get("/").text
-    strip = html.split('data-col="unsorted"', 1)[1].split("</section>", 1)[0]
-    assert '<details data-key="unsorted-v2">' in strip  # closed by default
-    assert "6 of 8 sorted" in strip and "2 waiting" in strip
-    assert 'aria-valuenow="6"' in strip and 'aria-valuemax="8"' in strip
-    assert "Needs ≈1 AI call · " in strip
-    assert 'href="/?view=list&amp;sorted=no"' in strip  # "See all … in List" never dead-ends
+    for params in ({}, {"view": "matrix"}):
+        html = env.client.get("/", params=params).text
+        strip = html.split('data-col="unsorted-strip"', 1)[1].split("</section>", 1)[0]
+        assert "6 of 8 sorted" in strip
+        assert 'aria-valuenow="6"' in strip and 'aria-valuemax="8"' in strip
+        assert "Needs ≈1 AI call · " in strip
+        assert 'href="/?tab=unsorted"' in strip  # Review never dead-ends
 
 
 def test_unsorted_filter(env):
     i = env.ids
     assert listed(env, sorted="no") == [i["<script>alert(1)</script>"], i["Order #42 refund request"]]
     r = env.client.get("/", params={"view": "list", "sorted": "no"})
-    assert "Not sorted yet" in r.text and "Clear filters" in r.text
-    assert 'href="/?view=list"' in r.text  # removing the filter keeps the view
+    assert "Not sorted yet" in r.text
+    assert 'href="/?view=all"' in r.text  # removing the filter keeps the view
     assert 'name="sorted" value="no"' in r.text  # search keeps the filter
 
 
@@ -397,7 +416,7 @@ def test_all_caught_up_and_empty_columns(env):
     r = env.client.get("/", params={"unread": "1"})
     assert "All caught up" in r.text and "Show read mail" in r.text
     assert "Nothing matches" not in r.text
-    r = env.client.get("/", params={"q": "Weekly"})
+    r = env.client.get("/", params={"view": "matrix", "q": "Weekly"})
     assert "Nothing to plan." in r.text and "Nothing urgent. You&#39;re clear." in r.text
 
 
@@ -444,22 +463,19 @@ def test_rejected_rule_keeps_what_was_typed(env):
 
 def test_category_menu_only_offers_categories_with_mail(env):
     html = env.client.get("/").text
-    assert '<option value="otp">' in html and '<option value="alert">' in html
+    assert 'href="/?category=otp"' in html and 'href="/?category=alert"' in html
     html = env.client.get("/", params={"account": "info@shop.example"}).text
-    menu = html.split('name="category"', 1)[1].split("</select>", 1)[0]
-    assert '<option value="alert">' in menu and '<option value="otp">' not in menu
+    menu = html.split('data-key="nav-categories"', 1)[1].split("</details>", 1)[0]
+    assert "category=alert" in menu and "category=otp" not in menu
 
 
 def test_unsorted_mail_is_not_called_done(env):
     # nothing in Do now while emails still wait for the AI: not a success state yet
     r = env.client.get("/", params={"q": "Order"})
+    assert "1 still being sorted" in r.text and "You&#39;re clear" not in r.text
+    r = env.client.get("/", params={"view": "matrix", "q": "Order"})
     do = r.text.split('data-col="do"', 1)[1].split("</section>", 1)[0]
     assert "1 still being sorted" in do and "You&#39;re clear" not in do
-    conn = db.connect(env.path)
-    conn.execute("UPDATE messages SET is_read = 1 WHERE id = ?", (env.ids["Contract needs signature"],))
-    conn.commit()
-    conn.close()
-    assert '<h1 class="hero">Nothing to do yet</h1>' in env.client.get("/").text
 
 
 def test_problem_banner_is_short_and_empty_inbox_has_one_primary(env, tmp_path):
@@ -488,7 +504,7 @@ def test_opening_in_pane_marks_read_but_plain_views_do_not(env):
     r = env.client.get(f"/message/{mid}?partial=1&mark_read=1", headers={"X-Inbox-Open": "1"})  # the user opened it
     assert r.status_code == 200
     assert query(env, "SELECT is_read FROM messages WHERE id = ?", mid)[0]["is_read"] == 1
-    assert "Mark unread" in r.text
+    assert 'aria-label="Mark as unread"' in r.text
 
 
 def test_theme_picker_and_early_theme_script_on_every_page(env):

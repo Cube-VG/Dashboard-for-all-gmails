@@ -1,6 +1,7 @@
 // Enhancements on top of the server-rendered pages. Every action also works as a plain
-// form post (POST-redirect-GET); this file only makes it faster: email pane, optimistic
-// moves with undo, toasts, keyboard shortcuts, sync states, live counts, display prefs.
+// form post (POST-redirect-GET); this file only makes it faster: Gmail-style reading view,
+// compose window / inline replies with Undo send, optimistic moves with undo, snackbars,
+// keyboard shortcuts, sync states, live counts, display prefs.
 (() => {
   "use strict";
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -36,6 +37,8 @@
       set: (on) => { if (on) delete root.dataset.advance; else root.dataset.advance = "off"; store.set("pref:advance", on ? "on" : "off"); } },
     keys: { get: () => root.dataset.keys !== "off",
       set: (on) => { if (on) delete root.dataset.keys; else root.dataset.keys = "off"; store.set("pref:keys", on ? "on" : "off"); } },
+    split: { get: () => root.dataset.split === "on",
+      set: (on) => { if (on) root.dataset.split = "on"; else delete root.dataset.split; store.set("pref:split", on ? "on" : "off"); } },
   };
   // Appearance: Auto follows macOS; Light / Dark stick (saved, applied before paint by prefs.js)
   const currentTheme = () => (root.dataset.theme === "light" || root.dataset.theme === "dark" ? root.dataset.theme : "auto");
@@ -310,7 +313,7 @@
     const doc = new DOMParser().parseFromString(await res.text(), "text/html");
     document.title = doc.title;
     const swaps = [];
-    for (const id of ["filterbar", "content"]) {
+    for (const id of ["sidebar", "content"]) {
       const now = document.getElementById(id);
       const next = doc.getElementById(id);
       if (!now || !next) continue;
@@ -322,7 +325,13 @@
     if (!swaps.length) return false;
     const state = captureState();
     const apply = () => {
+      // a reply being written in the pane survives the re-render (same email still open)
+      const keepPane = $("#pane [data-compose]") ? $("#pane") : null;
+      const drawerOpen = $("#sidebar")?.classList.contains("open");
       for (const [now, next] of swaps) now.replaceWith(document.adoptNode(next));
+      const newPane = $("#pane");
+      if (keepPane && newPane && newPane !== keepPane && newPane.querySelector(".detail")?.dataset.message === keepPane.querySelector(".detail")?.dataset.message) newPane.replaceWith(keepPane);
+      if (drawerOpen) $("#sidebar")?.classList.add("open");
       restoreState(state, focusSubject);
       if (moved) { const c = cardEl(moved); if (c) c.style.viewTransitionName = "moved-card"; }
       if (swapPane) { const pane = $("#pane"); pane?.classList.add("swap"); setTimeout(() => pane?.classList.remove("swap"), 200); }
@@ -358,7 +367,7 @@
   // phone: the email sheet covers the page, so hide the page from focus and VoiceOver
   function syncModal() {
     const modal = phone.matches && paneOpen();
-    for (const el of [$(".skip"), $(".top"), $("#filterbar"), $("#board")]) if (el) el.inert = modal;
+    for (const el of [$(".skip"), $(".top"), $("#sidebar"), $("#board"), $(".fab")]) if (el) el.inert = modal;
   }
   phone.addEventListener?.("change", syncModal);
 
@@ -381,8 +390,11 @@
     u.searchParams.delete("open");
     return u.href;
   }
+  // with the reading view covering the list (Gmail default), j/k still walk the list behind it
+  const boardHidden = () => { const b = $("#board"); return !!b && !b.getClientRects().length; };
   function visibleCards() {
-    return $$("#board .card").filter((c) => !c.closest("details:not([open])") && c.getClientRects().length);
+    const hidden = boardHidden();
+    return $$("#board .card").filter((c) => !c.closest("details:not([open])") && (hidden || c.getClientRects().length));
   }
   function neighbourId(id) {
     const list = visibleCards();
@@ -415,10 +427,12 @@
       html = await res.text();
     } catch { location.href = href; return; }
     const wasOpen = layout.classList.contains("with-pane") && !layout.classList.contains("pane-out");
+    if (!wasOpen) listY = window.scrollY;
     clearTimeout(closeTimer);
     layout.classList.remove("pane-out");
     pane.innerHTML = html; // rendered by our server; email text is already escaped
     pane.scrollTop = 0;
+    if (boardHidden() || !wasOpen) window.scrollTo({ top: 0 });
     lastHTML.content = null; // the DOM no longer matches the last full render
     if (wasOpen) {
       pane.classList.remove("swap");
@@ -458,17 +472,23 @@
       const sr = count.querySelector(".sr-only");
       if (sr) sr.textContent = `${Math.max(n, 0)} unread of ${total}`;
     }
-    const line = $(".status-line > span");
-    if (line) line.textContent = line.textContent.replace(/^(\d+)(?= unread)/, (m) => String(Math.max(0, +m - 1)));
-    const email = $(".acct", card)?.getAttribute("title");
-    const chipN = email && $$(".chips .chip-link").find((a) => a.getAttribute("title") === email)?.querySelector(".n");
-    if (chipN?.firstChild) {
-      const left = parseInt(chipN.firstChild.textContent, 10) - 1;
-      if (left > 0) chipN.firstChild.textContent = String(left); else chipN.remove();
+    const dec = (n) => {
+      if (!n?.firstChild) return;
+      const left = parseInt(n.firstChild.textContent, 10) - 1;
+      if (left > 0) n.firstChild.textContent = String(left); else n.remove();
+    };
+    dec($('.sidebar .nav-item[href="/"] .n'));
+    const email = card.dataset.account;
+    if (email) dec($$(".sidebar .acct-item").find((a) => a.dataset.email === email)?.querySelector(".n"));
+    const badge = $(".tabs .tab[aria-current] .tab-new");
+    if (badge && /new$/.test(badge.textContent)) {
+      const left = parseInt(badge.textContent, 10) - 1;
+      if (left > 0) badge.textContent = `${left} new`; else badge.remove();
     }
     return true;
   }
 
+  let listY = 0;
   function closePane(href, { push = true, focusBack = true } = {}) {
     const pane = $("#pane");
     const layout = $("#layout");
@@ -476,14 +496,17 @@
     if (!pane || !layout || !layout.classList.contains("with-pane")) return;
     const id = openId();
     lastHTML.content = null;
+    const covering = boardHidden();
     layout.classList.add("pane-out");
-    syncModal(); // before focusBack: an inert card link can't take focus
     clearTimeout(closeTimer);
-    const ms = reduceMotion.matches ? 150 : desktop.matches ? 220 : 280;
-    closeTimer = setTimeout(() => {
+    const done = () => {
       layout.classList.remove("with-pane", "pane-out");
       pane.replaceChildren();
-    }, ms);
+      syncModal();
+    };
+    if (covering) { done(); window.scrollTo({ top: listY }); } // back to the list where you left it
+    else closeTimer = setTimeout(done, reduceMotion.matches ? 150 : desktop.matches ? 220 : 280);
+    syncModal(); // before focusBack: an inert card link can't take focus
     markActive(null);
     if (focusBack && id) {
       const link = cardEl(id)?.querySelector(".card-link");
@@ -750,7 +773,7 @@
   async function runSync() {
     if (syncing) return;
     syncing = true;
-    const bar = $(".top .bar");
+    const bar = $(".top");
     bar?.classList.remove("is-done");
     bar?.classList.add("is-syncing");
     $$("form[data-sync] button").forEach((b) => { b.setAttribute("aria-disabled", "true"); b.setAttribute("aria-busy", "true"); });
@@ -790,6 +813,11 @@
       location.href = form.getAttribute("action") + (query ? "?" + query : "");
       return;
     }
+    if (form.hasAttribute("data-compose")) {
+      e.preventDefault();
+      if (e.submitter?.hasAttribute("data-ai-draft")) aiDraft(form); else sendCompose(form);
+      return;
+    }
     if (!form.hasAttribute("data-enhance")) return;
     e.preventDefault();
     const btn = e.submitter;
@@ -805,7 +833,7 @@
   // --- keyboard ------------------------------------------------------------------------------
   let gTimer = 0;
   function submitMove(key) {
-    const btn = $(`#pane .move[value="${key}"]`) || (!$("#pane") ? $(`.detail .move[value="${key}"]`) : null);
+    const btn = $(`#pane .card-moves .move[value="${key}"]`) || (!$("#pane") ? $(`.detail .card-moves .move[value="${key}"]`) : null);
     if (btn && btn.form && (paneOpen() || !$("#pane"))) {
       keyAction = true;
       if (typeof btn.form.requestSubmit === "function") btn.form.requestSubmit(btn); else btn.click();
@@ -832,6 +860,8 @@
       }
       return;
     }
+    if ($("#sidebar.open")) { e.preventDefault(); closeDrawer(); return; }
+    if (t.closest && t.closest(".compose-window") && t.matches("input, textarea, select")) { e.preventDefault(); t.blur(); return; }
     // first Esc leaves a pane field, the next one closes the pane (Mail)
     if (t.closest && t.closest("#pane") && t.matches("input:not([type=radio]):not([type=checkbox]), textarea, select")) {
       e.preventDefault();
@@ -843,6 +873,15 @@
     if (paneOpen() && $("#pane a[data-close]")) { e.preventDefault(); closePane(closeHref()); }
   }
   document.addEventListener("keydown", (e) => {
+    if (!e.defaultPrevented && !e.isComposing && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      const form = e.target instanceof Element ? e.target.closest("form[data-compose]") : null;
+      if (form) { e.preventDefault(); sendCompose(form); return; }
+    }
+    if (!e.defaultPrevented && !e.isComposing && e.key === "Enter" && e.target instanceof Element && e.target.matches("[data-help-row] input")) {
+      e.preventDefault();
+      aiDraft(e.target.form);
+      return;
+    }
     if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target instanceof Element ? e.target : document.body;
     if (e.key === "Escape") { onEscape(e, t); return; }
@@ -852,8 +891,7 @@
     if (gTimer) {
       clearTimeout(gTimer);
       gTimer = 0;
-      const seg = $$(".seg a");
-      const target = { m: seg[0]?.href, l: seg[1]?.href, r: "/rules" }[e.key];
+      const target = { i: "/", a: "/?view=all", l: "/?view=all", m: "/?view=matrix", t: "/sent", r: "/rules" }[e.key];
       if (target) { e.preventDefault(); location.href = target; }
       return;
     }
@@ -869,6 +907,14 @@
       case "U": if (!e.shiftKey) return; readKey(false, false); break;
       case "I": if (!e.shiftKey) return; readKey(true, false); break;
       case "z": runUndo(); break;
+      case "c": openCompose("/compose?next=" + encodeURIComponent(location.pathname + location.search)); break;
+      case "r": case "a": case "f": {
+        const link = $(`#pane .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) || (!$("#pane") ? $(`.detail .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) : null);
+        if (!link) return;
+        link.click();
+        break;
+      }
+      case "u": if (paneOpen() && $("#pane a[data-close]")) closePane(closeHref()); else return; break;
       case "/": { const s = $(".search input"); if (!s) return; s.focus(); s.select(); break; }
       case "?": toggleSheet(); break;
       case "g": gTimer = setTimeout(() => { gTimer = 0; }, 1000); break;
@@ -990,6 +1036,12 @@
       pill.textContent = `${fresh} newly sorted · Show`;
       pill.hidden = false;
     }
+    const inboxN = $('.sidebar .nav-item[href="/"]');
+    if (inboxN) {
+      let n = $(".n", inboxN);
+      if (s.unread && !n) { n = document.createElement("span"); n.className = "n num"; inboxN.append(n); }
+      if (n) { if (s.unread) n.replaceChildren(String(s.unread), Object.assign(document.createElement("span"), { className: "sr-only", textContent: " unread" })); else n.remove(); }
+    }
     const dock = $(".dock");
     // the dock shows filtered counts when filters are on; global stats would contradict them
     if (dock && s.quadrant_unread && !$("#filterbar .active-filters")) {
@@ -1033,6 +1085,257 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") schedulePoll(500);
   });
+
+
+  // --- sidebar: rail on desktop, drawer on tablets and phones --------------------------------
+  const wide = media("(min-width: 1024px)");
+  function openDrawer() {
+    const side = $("#sidebar");
+    if (!side) return;
+    side.classList.add("open");
+    $(".scrim")?.removeAttribute("hidden");
+    $("[data-drawer]")?.setAttribute("aria-expanded", "true");
+    $(".nav-item[aria-current], .compose-btn", side)?.focus({ preventScroll: true });
+  }
+  function closeDrawer() {
+    $("#sidebar")?.classList.remove("open");
+    $(".scrim")?.setAttribute("hidden", "");
+    $("[data-drawer]")?.setAttribute("aria-expanded", "false");
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-drawer]")) {
+      if (wide.matches) {
+        const on = root.dataset.rail !== "on";
+        if (on) root.dataset.rail = "on"; else delete root.dataset.rail;
+        store.set("pref:rail", on ? "on" : "off");
+      } else if ($("#sidebar.open")) closeDrawer(); else openDrawer();
+      return;
+    }
+    if (e.target.closest("[data-drawer-close]") || ($("#sidebar.open") && e.target.closest("#sidebar a"))) closeDrawer();
+  });
+  wide.addEventListener?.("change", closeDrawer);
+
+  // --- compose: floating window (new mail), inline under an email (replies), full page --------
+  const UNDO_FALLBACK = 10;
+  const composeWindow = () => $("#compose-dock .compose-window");
+  const draftKey = (form) => form?.dataset.draftKey || "";
+  const fieldsOf = (form) => ({
+    to: form.elements.to?.value || "", cc: form.elements.cc?.value || "", bcc: form.elements.bcc?.value || "",
+    subject: form.elements.subject?.value || "", body: form.elements.body?.value || "",
+    from: form.elements.from_account?.value || "",
+  });
+  function setStatus(form, text) { const s = $("[data-compose-status]", form); if (s) s.textContent = text; }
+  function saveDraft(form) {
+    if (!draftKey(form)) return;
+    const f = fieldsOf(form);
+    if (!f.body.trim() && !f.to.trim() && !f.subject.trim()) { forgetDraft(form); return; }
+    store.set(draftKey(form), JSON.stringify({ ...f, at: Date.now() }));
+    setStatus(form, "Draft saved");
+  }
+  function forgetDraft(form) { try { localStorage.removeItem(draftKey(form)); } catch { /* storage blocked */ } }
+  function restoreDraft(form) {
+    if (form.dataset.restored || form.elements.draft_id) return; // an undone/failed email brings its own text
+    form.dataset.restored = "1";
+    let d = null;
+    try { d = JSON.parse(store.get(draftKey(form)) || "null"); } catch { d = null; }
+    if (!d || !d.body || form.elements.body.value.trim()) return;
+    if (Date.now() - (d.at || 0) > 14 * 864e5) { forgetDraft(form); return; }
+    for (const k of ["to", "cc", "bcc", "subject", "body"]) if (form.elements[k] && d[k] != null && (k === "body" || d[k])) form.elements[k].value = d[k];
+    if (d.from && form.elements.from_account) form.elements.from_account.value = d.from;
+    if (d.cc || d.bcc) showCc(form);
+    setStatus(form, "Draft restored");
+  }
+  function showCc(form) {
+    $$(".cc-row", form).forEach((r) => r.classList.remove("js-collapsed"));
+    $("[data-cc-links]", form)?.classList.add("js-hidden");
+  }
+  function enhanceCompose(form) {
+    if (!form || form.dataset.ready) return;
+    form.dataset.ready = "1";
+    restoreDraft(form);
+    let t = 0;
+    form.addEventListener("input", () => { clearTimeout(t); setStatus(form, ""); t = setTimeout(() => saveDraft(form), 600); });
+    form.addEventListener("change", () => saveDraft(form));
+  }
+  function focusCompose(form) {
+    const empty = ["to", "subject"].map((k) => form.elements[k]).find((el) => el && el.type !== "hidden" && !el.value.trim());
+    const target = form.dataset.mode === "reply" || form.dataset.mode === "all" ? form.elements.body : empty || form.elements.body;
+    target?.focus({ preventScroll: false });
+    if (target === form.elements.body) target.setSelectionRange(0, 0);
+  }
+  async function fetchCompose(href, variant) {
+    const url = new URL(href, location.href);
+    url.searchParams.set("partial", variant);
+    const res = await fetch(url, { headers: { Accept: "text/html" } });
+    if (res.status === 401) { toLogin(); return null; }
+    if (!res.ok) throw new Error(String(res.status));
+    const tpl = document.createElement("template");
+    tpl.innerHTML = (await res.text()).trim(); // rendered by our server; everything is escaped
+    return tpl.content.firstElementChild;
+  }
+  async function openCompose(href) {
+    const dock = $("#compose-dock");
+    if (!dock) { location.href = href; return; }
+    const open = composeWindow();
+    if (open) {
+      // one window at a time (Gmail stacks them; one keeps it simple): bring it back
+      open.classList.remove("minimized");
+      const f = fieldsOf(open);
+      if (f.body.trim() || f.to.trim()) { focusCompose(open); toast("Finish or close the message you're writing first", { kind: "info" }); return; }
+      open.remove();
+    }
+    let form;
+    try { form = await fetchCompose(href, "window"); } catch { location.href = href; return; }
+    if (!form) return;
+    dock.append(form);
+    enhanceCompose(form);
+    focusCompose(form);
+  }
+  async function openReply(link) {
+    const slot = link.closest(".detail")?.querySelector("[data-reply-slot]");
+    if (!slot) { location.href = link.href; return; }
+    const current = $("[data-compose]", slot);
+    if (current && current.dataset.mode === link.dataset.reply) { focusCompose(current); return; }
+    if (current && fieldsOf(current).body.trim() && !confirm("Discard the reply you're writing?")) return;
+    let form;
+    try { form = await fetchCompose(link.href, "inline"); } catch { location.href = link.href; return; }
+    if (!form) return;
+    slot.replaceChildren(form);
+    enhanceCompose(form);
+    form.scrollIntoView({ block: "nearest", behavior: reduceMotion.matches ? "auto" : "smooth" });
+    focusCompose(form);
+  }
+  function closeCompose(form) {
+    if (form.classList.contains("compose-page")) { location.href = form.elements.next?.value || "/"; return; }
+    form.remove();
+  }
+  function invalid(form, field, message) {
+    const el = field && form.elements[field];
+    if (el && el.type !== "hidden") {
+      if (field === "cc" || field === "bcc") showCc(form);
+      el.setAttribute("aria-invalid", "true");
+      el.focus();
+      el.addEventListener("input", () => el.removeAttribute("aria-invalid"), { once: true });
+    }
+    toast(message, { kind: "err" });
+  }
+  async function sendCompose(form) {
+    if (form.classList.contains("busy")) return;
+    const f = fieldsOf(form);
+    if (!f.to.trim() && !f.cc.trim() && !f.bcc.trim()) { invalid(form, "to", "Add at least one recipient."); return; }
+    if (form.elements.subject?.type !== "hidden" && !f.subject.trim() && !confirm("Send this message without a subject?")) return;
+    form.classList.add("busy");
+    const r = await post(form.getAttribute("action"), formBody(form));
+    form.classList.remove("busy");
+    if (!r.ok) { invalid(form, r.data.field, r.message); return; }
+    forgetDraft(form);
+    const next = r.data.next || "/";
+    const pending = { id: r.data.id, until: Date.now() + (r.data.undo_seconds || UNDO_FALLBACK) * 1000 };
+    if (form.classList.contains("compose-page")) {
+      session.set("outbox:pending", JSON.stringify(pending));
+      location.href = next;
+      return;
+    }
+    closeCompose(form);
+    trackSend(pending);
+  }
+  // Snackbar while the email waits (Undo), then "Message sent" or what went wrong.
+  function trackSend(p) {
+    session.set("outbox:pending", JSON.stringify(p));
+    const left = p.until - Date.now();
+    if (left > 500) {
+      toast("Sending…", { timeout: left, actions: [{ label: "Undo", run: () => undoSend(p.id) }, { label: "View", run: () => { location.href = "/sent"; } }] });
+    }
+    setTimeout(() => pollSend(p.id, 0), Math.max(left, 0) + 2500);
+  }
+  async function pollSend(id, tries) {
+    let s;
+    try {
+      const res = await fetch(`/api/outbox/${encodeURIComponent(id)}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+      if (res.status === 401) { toLogin(); return; }
+      s = await res.json();
+    } catch { s = null; }
+    if (s && s.status === "sent") {
+      session.set("outbox:pending", "");
+      toast(s.note ? `Sent, but ${s.note.charAt(0).toLowerCase()}${s.note.slice(1)}` : "Message sent", { kind: s.note ? "info" : "ok", actions: [{ label: "View", run: () => { location.href = "/sent"; } }] });
+      if ($("#board")) refresh().catch(() => {});
+      return;
+    }
+    if (s && s.status === "failed") {
+      session.set("outbox:pending", "");
+      toast(`Not sent: ${s.error || "something went wrong"}`, { kind: "err", actions: [{ label: "Edit", run: () => openCompose(`/compose?draft=${id}`) }] });
+      if ($("#board")) refresh().catch(() => {});
+      return;
+    }
+    if (s && s.status === "cancelled") { session.set("outbox:pending", ""); return; }
+    if (tries < 20) setTimeout(() => pollSend(id, tries + 1), 3000);
+  }
+  async function undoSend(id) {
+    const r = await post(`/outbox/${encodeURIComponent(id)}/undo`, {});
+    session.set("outbox:pending", "");
+    if (!r.ok) { toast(r.message, { kind: "err" }); return; }
+    toast("Sending undone", { kind: "info" });
+    openCompose(r.data.edit_url || `/compose?draft=${id}`);
+  }
+  async function aiDraft(form) {
+    if (!form || form.classList.contains("writing")) return;
+    const row = $("[data-help-row]", form);
+    if (row?.classList.contains("js-collapsed")) { toggleHelp(form, true); return; }
+    const body = form.elements.body;
+    const before = body.value;
+    form.classList.add("writing");
+    setStatus(form, "Writing…");
+    const r = await post("/compose/draft", formBody(form));
+    form.classList.remove("writing");
+    setStatus(form, "");
+    if (!r.ok) { toast(r.message, { kind: "err" }); return; }
+    body.value = r.data.text || "";
+    saveDraft(form);
+    body.focus();
+    body.setSelectionRange(0, 0);
+    body.scrollTop = 0;
+    toast("Draft ready: read it and edit before sending", { actions: before.trim() ? [{ label: "Undo", run: () => { body.value = before; saveDraft(form); } }] : [] });
+  }
+  function toggleHelp(form, show) {
+    const row = $("[data-help-row]", form);
+    const btn = $("[data-help-toggle]", form);
+    if (!row) return;
+    const on = show ?? row.classList.contains("js-collapsed");
+    row.classList.toggle("js-collapsed", !on);
+    btn?.setAttribute("aria-expanded", String(on));
+    if (on) $("input", row)?.focus();
+  }
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const t = e.target;
+    const reply = t.closest("a[data-reply]");
+    if (reply && reply.closest("#pane, .detail-page")) { e.preventDefault(); openReply(reply); return; }
+    const neu = t.closest("a[data-compose-new], a[data-compose-draft]");
+    if (neu && $("#compose-dock")) { e.preventDefault(); closeDrawer(); openCompose(neu.getAttribute("href")); return; }
+    const form = t.closest("form[data-compose]");
+    if (!form) return;
+    if (t.closest("[data-show-cc]")) { showCc(form); form.elements.cc?.focus(); return; }
+    if (t.closest("[data-help-toggle]")) { toggleHelp(form); return; }
+    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); return; }
+    if (t.closest("[data-compose-max]")) { form.classList.toggle("maximized"); form.classList.remove("minimized"); return; }
+    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); focusCompose(form); return; }
+    if (t.closest("[data-compose-close]")) { saveDraft(form); closeCompose(form); if (fieldsOf(form).body.trim()) toast("Draft saved on this device", { kind: "info" }); return; }
+    if (t.closest("[data-compose-discard]")) {
+      e.preventDefault();
+      const f = fieldsOf(form);
+      if ((f.body.trim() || f.to.trim()) && !confirm("Discard this draft?")) return;
+      forgetDraft(form);
+      closeCompose(form);
+      toast("Draft discarded", { kind: "info" });
+    }
+  });
+  // a send that was still waiting when the page changed (or a full-page compose just sent)
+  (() => {
+    let p = null;
+    try { p = JSON.parse(session.get("outbox:pending") || "null"); } catch { p = null; }
+    if (p && p.id) trackSend(p);
+  })();
+  $$("form[data-compose]").forEach((f) => { enhanceCompose(f); if (f.classList.contains("compose-page")) focusCompose(f); });
 
   // --- start ---------------------------------------------------------------------------------
   restoreColumns();

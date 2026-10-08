@@ -141,6 +141,10 @@ for the key, accounts and passwords itself.
 ## Notes
 
 - **Gmail may email you "new sign-in from Google Cloud".** That's the VM. App Passwords keep working.
+- **Sending works from the VM.** Google Cloud blocks only port 25 (for running your own mail
+  server); mail goes out through Gmail's and your host's servers on ports 465/587, which are open.
+  After an update, `push-to-vm.sh --settings` prints receive ✓ send ✓ for every account.
+- **Times on the VM** follow your Mac's time zone: `push-to-vm.sh` copies it over.
 - **No pop-up notifications on the VM.** It has no screen. Ask for phone push notifications (ntfy)
   if you want them.
 - **Staying free:** an activated (not trial) account, 1 VM, `e2-micro`, a US region, a *standard* disk

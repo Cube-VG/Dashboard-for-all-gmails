@@ -17,6 +17,13 @@ sudo apt-get install -y -qq python3 python3-venv python3-pip git curl >/dev/null
 python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ needed"' \
   || { echo "This VM's Python is too old; use a Debian 12 or Ubuntu 24.04 image."; exit 1; }
 
+# times in the dashboard follow your Mac's time zone (push-to-vm.sh passes it on)
+if [ -n "${INBOX_TZ:-}" ] && [ -e "/usr/share/zoneinfo/$INBOX_TZ" ] \
+   && [ "$(timedatectl show -p Timezone --value 2>/dev/null)" != "$INBOX_TZ" ]; then
+  say "Time zone: $INBOX_TZ"
+  sudo timedatectl set-timezone "$INBOX_TZ"
+fi
+
 # 1 GB RAM is plenty to run the app, but a little swap keeps pip installs from running out of memory.
 if ! swapon --show | grep -q .; then
   say "Adding 1 GB of swap"

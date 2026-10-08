@@ -132,6 +132,8 @@ def main(argv=None) -> int:
 
     webview = _load_webview() if args.window else None
     scheduler = None if args.no_scheduler else start_scheduler()
+    from app.send.outbox import start_worker
+    stop_outbox = start_worker()  # sends what you write once its Undo time is over
     try:
         if webview:
             _run_in_window(server, url, webview, scheduler is not None)
@@ -140,6 +142,7 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:  # uvicorn re-raises Ctrl+C after its own clean shutdown
         pass
     finally:
+        stop_outbox.set()
         if scheduler is not None:
             scheduler.shutdown(wait=False)
         if is_running():

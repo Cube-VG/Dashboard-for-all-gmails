@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="page compose-screen">
+  <div class="page-head">
+    <a class="icon-btn back-btn" href="{{ compose_next }}" aria-label="Back" title="Back"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
+    <h1 class="title">{{ title }}</h1>
+  </div>
+  {% if original %}
+  <p class="compose-context">{{ "Replying to" if mode in ("reply", "all") else "Forwarding" }} <b>{{ original.subject or "(no subject)" }}</b> from {{ original.sender }}</p>
+  {% endif %}
+  {% include "_compose.html" %}
+</div>
+{% endblock %}

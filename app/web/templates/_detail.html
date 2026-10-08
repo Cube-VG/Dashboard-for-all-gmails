@@ -1,41 +1,58 @@
 {% set SUBS = {"do": "Urgent + important", "schedule": "Important", "quick": "Urgent", "later": "Neither"} %}
-<article class="detail q-{{ msg.quad or 'none' }}" data-message="{{ msg.id }}" data-imp="{{ msg.importance if msg.importance is not none else '' }}" data-urg="{{ msg.urgency if msg.urgency is not none else '' }}" data-cat="{{ msg.category or '' }}" data-read="{{ 1 if msg.is_read else 0 }}">
-  <div class="detail-bar glass">
+{% set back = "/message/" ~ msg.id if standalone else next_url %}
+{% macro reply_link(mode, label, icon, cls="btn btn-outline") %}<a class="{{ cls }}" href="/compose?mode={{ mode }}&amp;reply={{ msg.id }}&amp;next={{ back|urlencode }}" data-reply="{{ mode }}" aria-keyshortcuts="{{ {'reply': 'r', 'all': 'a', 'forward': 'f'}[mode] }}" title="{{ label }} ({{ {'reply': 'r', 'all': 'a', 'forward': 'f'}[mode] }})"><svg class="ic" aria-hidden="true"><use href="#{{ icon }}"/></svg><span>{{ label }}</span></a>{% endmacro %}
+<article class="detail q-{{ msg.quad or 'none' }}" data-message="{{ msg.id }}" data-account="{{ msg.account_email }}" data-imp="{{ msg.importance if msg.importance is not none else '' }}" data-urg="{{ msg.urgency if msg.urgency is not none else '' }}" data-cat="{{ msg.category or '' }}" data-read="{{ 1 if msg.is_read else 0 }}">
+  <div class="detail-bar">
     {% if standalone %}
-    <a class="btn btn-text back-btn" href="/"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg><span>Inbox</span></a>
+    <a class="icon-btn back-btn" href="/" aria-label="Back to Inbox" title="Back to Inbox"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
     {% else %}
-    <a class="icon-btn close-btn" href="{{ close_url }}" data-close title="Close (Esc)" aria-keyshortcuts="Escape"><svg class="ic x-ic" aria-hidden="true"><use href="#i-x"/></svg><svg class="ic back-ic" aria-hidden="true"><use href="#i-back"/></svg><span class="close-label">Close</span><span class="back-label">Inbox</span></a>
-    <span class="nav-btns" data-nav hidden>
-      <button type="button" class="icon-btn" data-step="-1" aria-label="Previous email" title="Previous email (k)" aria-keyshortcuts="k"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg></button>
-      <button type="button" class="icon-btn" data-step="1" aria-label="Next email" title="Next email (j)" aria-keyshortcuts="j"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg></button>
-    </span>
+    <a class="icon-btn close-btn" href="{{ close_url }}" data-close aria-label="Back to the list" title="Back to the list (u)" aria-keyshortcuts="u"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
     {% endif %}
-    <span class="spacer"></span>
     <form class="read-form" method="post" action="/message/{{ msg.id }}/read" data-enhance>
       <input type="hidden" name="is_read" value="{{ 0 if msg.is_read else 1 }}">
       <input type="hidden" name="next" value="{{ next_url }}">
-      <button class="btn btn-secondary on-glass" title="{{ 'Mark unread (Shift+U)' if msg.is_read else 'Mark read (Shift+I)' }}" aria-keyshortcuts="{{ 'Shift+U' if msg.is_read else 'Shift+I' }}">{{ "Mark unread" if msg.is_read else "Mark read" }}</button>
+      <button class="icon-btn" title="{{ 'Mark as unread (Shift+U)' if msg.is_read else 'Mark as read (Shift+I)' }}" aria-label="{{ 'Mark as unread' if msg.is_read else 'Mark as read' }}" aria-keyshortcuts="{{ 'Shift+U' if msg.is_read else 'Shift+I' }}"><svg class="ic" aria-hidden="true"><use href="{{ '#i-unread' if msg.is_read else '#i-mail-open' }}"/></svg></button>
     </form>
+    <details class="menu-wrap move-wrap">
+      <summary class="icon-btn" aria-label="Move to" title="Move to (1–4)"><svg class="ic" aria-hidden="true"><use href="#i-move"/></svg></summary>
+      <div class="menu glass thick">
+        <p class="menu-title">Move to</p>
+        <form class="moves menu-moves" method="post" action="/message/{{ msg.id }}/score" data-enhance role="group" aria-label="Move to">
+          <input type="hidden" name="next" value="{{ next_url }}">
+          {% for key, label in ACTIONS.items() %}
+          <button class="menu-item move q-{{ key }}{% if msg.quad == key %} current{% endif %}" name="move" value="{{ key }}" aria-pressed="{{ 'true' if msg.quad == key else 'false' }}"><span class="q-glyph xs"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ key }}"/></svg></span><span class="move-label">{{ label }}</span><kbd>{{ loop.index }}</kbd></button>
+          {% endfor %}
+        </form>
+      </div>
+    </details>
+    {{ reply_link("reply", "Reply", "i-reply", "icon-btn bar-reply") }}
+    <span class="spacer"></span>
+    {% if not standalone %}
+    <span class="nav-btns" data-nav hidden>
+      <button type="button" class="icon-btn" data-step="-1" aria-label="Newer email" title="Newer (k)" aria-keyshortcuts="k"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></button>
+      <button type="button" class="icon-btn" data-step="1" aria-label="Older email" title="Older (j)" aria-keyshortcuts="j"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg></button>
+    </span>
+    {% endif %}
     {% if msg.gmail_url %}
-    <a class="btn btn-primary gmail-btn" href="{{ msg.gmail_url }}" target="_blank" rel="noopener noreferrer"><span>Open in Gmail</span><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg></a>
+    <a class="icon-btn gmail-btn" href="{{ msg.gmail_url }}" target="_blank" rel="noopener noreferrer" aria-label="Open in Gmail" title="Open in Gmail"><svg class="ic" aria-hidden="true"><use href="#i-ext"/></svg></a>
     {% endif %}
   </div>
 
   <div class="detail-body">
-  {% if standalone %}<h1 class="detail-subject" tabindex="-1">{{ msg.subject or "(no subject)" }}</h1>
-  {% else %}<h2 class="detail-subject" tabindex="-1">{{ msg.subject or "(no subject)" }}</h2>{% endif %}
-  <dl class="headers">
-    <dt>From</dt><dd>{% if msg.from_name %}<b>{{ msg.from_name }}</b> {% endif %}<span class="addr">&lt;{{ msg.from_email }}&gt;</span></dd>
-    {% if msg.to_email %}<dt>To</dt><dd>{{ msg.to_email }}</dd>{% endif %}
-    <dt>Date</dt><dd><time datetime="{{ msg.received_at }}">{{ msg.when_full }}</time></dd>
-    <dt>Account</dt><dd><i class="dot" style="--c: {{ msg.color }}"></i>{{ msg.account_label }} <span class="addr">{{ msg.account_email }}</span></dd>
-    {% if msg.has_attachments %}<dt>Files</dt><dd><svg class="ic sm" aria-hidden="true"><use href="#i-clip"/></svg> Has attachments (open the email in Gmail or webmail to see them)</dd>{% endif %}
-  </dl>
+  <div class="subject-row">
+    {% if standalone %}<h1 class="detail-subject" tabindex="-1">{{ msg.subject or "(no subject)" }}</h1>
+    {% else %}<h2 class="detail-subject" tabindex="-1">{{ msg.subject or "(no subject)" }}</h2>{% endif %}
+    <span class="subject-labels">
+      {% if msg.quad %}<span class="label-chip quad q-{{ msg.quad }}" title="{{ SUBS[msg.quad] }}"><span class="q-glyph xs"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ msg.quad }}"/></svg></span>{{ ACTIONS[msg.quad] }}</span>{% endif %}
+      <span class="label-chip" style="--c: {{ msg.color }}" title="{{ msg.account_email }}">{{ msg.account_label }}</span>
+      {% if msg.answered_at %}<span class="label-chip replied">Replied</span>{% endif %}
+    </span>
+  </div>
 
-  <div class="ai-box">
+  <section class="ai-card" aria-label="AI summary and priority">
     <div class="ai-head">
+      <span class="ai-title"><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg>{{ "Summary" if msg.summary else "Priority" }}</span>
       {% if msg.quad %}
-      <span class="chip quad q-{{ msg.quad }}" title="{{ SUBS[msg.quad] }}"><span class="q-glyph xs"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ msg.quad }}"/></svg></span>{{ ACTIONS[msg.quad] }}</span>
       <span class="scores">
         <span class="meter-dots" role="img" aria-label="Importance {{ msg.importance }} of 5"><span aria-hidden="true">Important</span> {% for i in range(1, 6) %}<i class="pip{% if i <= msg.importance %} on{% endif %}"></i>{% endfor %}</span>
         <span class="meter-dots" role="img" aria-label="Urgency {{ msg.urgency }} of 5"><span aria-hidden="true">Urgent</span> {% for i in range(1, 6) %}<i class="pip{% if i <= msg.urgency %} on{% endif %}"></i>{% endfor %}</span>
@@ -48,8 +65,7 @@
     </div>
     {% if msg.summary %}<p class="ai-summary">{{ msg.summary }}</p>{% endif %}
     {% if msg.scored_by %}<p class="ai-reason"><b>Why:</b> {{ msg.reason or ("You moved it here." if msg.scored_by == "user" else "No reason given.") }} <span class="by">· scored by {{ msg.scored_by_label }}</span></p>{% endif %}
-
-    <form class="moves" method="post" action="/message/{{ msg.id }}/score" data-enhance role="group" aria-label="Move to">
+    <form class="moves card-moves" method="post" action="/message/{{ msg.id }}/score" data-enhance role="group" aria-label="Move to">
       <input type="hidden" name="next" value="{{ next_url }}">
       <span class="moves-label" aria-hidden="true">Move to</span>
       <span class="moves-grid">
@@ -58,9 +74,26 @@
       {% endfor %}
       </span>
     </form>
+  </section>
+
+  <div class="msg-head">
+    <span class="avatar lg" style="--a: {{ msg.avatar.color }}" aria-hidden="true">{{ msg.avatar.letter }}</span>
+    <div class="msg-from">
+      <p class="from-line"><b>{{ msg.from_name or msg.from_email }}</b>{% if msg.from_name %} <span class="addr">&lt;{{ msg.from_email }}&gt;</span>{% endif %}</p>
+      <p class="to-line">{% if msg.to_email %}to {{ msg.to_email }}{% endif %}{% if msg.cc_email %}{% if msg.to_email %}, {% endif %}cc {{ msg.cc_email }}{% endif %}</p>
+    </div>
+    <time class="msg-date" datetime="{{ msg.received_at }}">{{ msg.when_full }}</time>
   </div>
+  {% if msg.has_attachments %}<p class="attach-note"><svg class="ic sm" aria-hidden="true"><use href="#i-clip"/></svg> Has attachments: open the email in Gmail or your webmail to see them.</p>{% endif %}
 
   <div class="body-text">{{ msg.body_text or msg.snippet or "(empty message)" }}</div>
+
+  <div class="reply-bar">
+    {{ reply_link("reply", "Reply", "i-reply") }}
+    {{ reply_link("all", "Reply all", "i-reply-all") }}
+    {{ reply_link("forward", "Forward", "i-forward") }}
+  </div>
+  <div class="reply-slot" data-reply-slot></div>
 
   <details class="panel">
     <summary>Fine-tune the score<svg class="ic chev chev-r" aria-hidden="true"><use href="#i-next"/></svg></summary>

@@ -1,7 +1,7 @@
 """Command line tools. The full app (dashboard + background sync) starts with `python -m app`.
 
     python -m app.cli set-password you@gmail.com   save an account's password in the OS keyring
-    python -m app.cli check                         try logging in to every account
+    python -m app.cli check                         try receiving and sending for every account
     python -m app.cli sync                          fetch new mail from every account
     python -m app.cli classify                      sort unscored mail (rules + Gemma)
     python -m app.cli run-once                      sync + sort + notify, once
@@ -31,6 +31,7 @@ def cmd_set_password(args):
 
 
 def cmd_check(args):
+    from app.send.transport import check_login, friendly_error
     from app.sync.imap_sync import connect_mailbox
 
     for a in config.load_accounts():
@@ -40,9 +41,17 @@ def cmd_check(args):
             continue
         try:
             with connect_mailbox(a.imap_host, a.imap_port).login(a.username, pw, initial_folder=a.folder):
-                print(f"✓ {a.label:<22} {a.email}")
+                pass
         except Exception as exc:  # noqa: BLE001
             print(f"✗ {a.label:<22} {a.email}: {exc}")
+            continue
+        try:
+            check_login(a, pw)
+        except Exception as exc:  # noqa: BLE001
+            print(f"✓ {a.label:<22} {a.email}  receive ✓  send ✗ {a.smtp_host}:{a.smtp_port}: "
+                  f"{friendly_error(exc, a)}")
+            continue
+        print(f"✓ {a.label:<22} {a.email}  receive ✓  send ✓")
 
 
 def cmd_sync(args):

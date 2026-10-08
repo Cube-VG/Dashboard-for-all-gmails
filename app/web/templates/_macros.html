@@ -27,3 +27,35 @@
 {% macro more(group) %}
 {% if group.total > group.cards|length %}<p class="more">Showing {{ group.cards|length }} of {{ group.total }} · <a href="{{ f.url(view='list') }}">See all in List</a></p>{% endif %}
 {% endmacro %}
+
+{# Gmail-style row: avatar (phone), sender, labels + subject — summary, date; read toggle on hover #}
+{% macro row(m, show_quad=False, show_acct=True) %}
+<article class="card row{% if not m.is_read %} unread{% endif %}{% if m.answered_at %} answered{% endif %}{% if m.id == open_id %} active{% endif %}" data-id="{{ m.id }}" data-account="{{ m.account_email }}" data-imp="{{ m.importance if m.importance is not none else '' }}" data-urg="{{ m.urgency if m.urgency is not none else '' }}" data-cat="{{ m.category or '' }}" data-read="{{ 1 if m.is_read else 0 }}">
+  <a class="card-link row-link" href="{{ f.url(open=m.id) }}" data-open="{{ m.id }}">
+    <span class="avatar" style="--a: {{ m.avatar.color }}" aria-hidden="true">{{ m.avatar.letter }}</span>
+    <span class="sender">{% if not m.is_read %}<span class="sr-only">Unread: </span>{% endif %}{{ m.sender }}</span>
+    <span class="row-main">
+      {%- if show_quad -%}
+      {% if m.quad %}<span class="chip quad q-{{ m.quad }}"{% if m.priority_score is not none %} title="Priority score {{ '%.1f'|format(m.priority_score) }}"{% endif %}><span class="q-glyph xs"><svg class="ic" aria-hidden="true"><use href="#i-q-{{ m.quad }}"/></svg></span>{{ ACTIONS[m.quad] }}</span>
+      {% else %}<span class="chip quad q-none"><svg class="ic" aria-hidden="true"><use href="#i-hourglass"/></svg>Not sorted</span>{% endif %}
+      {%- endif -%}
+      {% if show_acct %}<span class="label-chip" style="--c: {{ m.color }}" title="{{ m.account_email }}">{{ m.account_label }}</span>{% endif %}
+      {% if m.answered_at %}<span class="label-chip replied">Replied</span>{% endif %}
+      {% if m.category %}<span class="label-chip cat">{{ m.category }}</span>{% endif %}
+      <span class="subject">{{ m.subject or "(no subject)" }}</span>
+      {% set why = ("Why: " ~ (m.reason or ("You moved it here." if m.scored_by == "user" else "No reason given.")) ~ " · scored by " ~ m.scored_by_label) if m.scored_by else "" %}
+      {% if m.summary or m.snippet %}<span class="snippet{% if m.summary %} summary{% endif %}"{% if why %} title="{{ why }}"{% endif %}><span class="dash" aria-hidden="true"> – </span>{{ m.summary or m.snippet }}</span>{% endif %}
+    </span>
+    <span class="row-end">
+      {% if m.due %}<span class="chip due {{ m.due.cls }}">{{ m.due.text }}</span>{% endif %}
+      {% if m.has_attachments %}<svg class="ic sm clip" role="img" aria-label="Has attachments"><title>Has attachments</title><use href="#i-clip"/></svg>{% endif %}
+      <time class="num" datetime="{{ m.received_at }}" title="{{ m.when_full }}">{{ m.when }}</time>
+    </span>
+  </a>
+  <form class="row-act" method="post" action="/message/{{ m.id }}/read" data-enhance>
+    <input type="hidden" name="is_read" value="{{ 0 if m.is_read else 1 }}">
+    <input type="hidden" name="next" value="{{ here }}">
+    <button class="icon-btn" title="{{ 'Mark as unread' if m.is_read else 'Mark as read' }}" aria-label="{{ 'Mark as unread' if m.is_read else 'Mark as read' }}: {{ m.subject or '(no subject)' }}"><svg class="ic" aria-hidden="true"><use href="{{ '#i-unread' if m.is_read else '#i-mail-open' }}"/></svg></button>
+  </form>
+</article>
+{% endmacro %}

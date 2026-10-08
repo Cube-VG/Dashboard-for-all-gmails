@@ -1,5 +1,30 @@
 # Unified Inbox — Design Spec (source of truth)
 
+> **v2 (current): Gmail's structure, this file's palette.** The app is public and should need no
+> learning, so layout and flow copy Gmail while colours, type, radii, glass menus and motion
+> stay as specified below. Where v2 and an older section disagree, v2 wins.
+>
+> - **Shell:** app bar (menu, logo, wide search pill, refresh, settings gear) · left sidebar
+>   (lime **Compose**, Inbox / All mail / Priority matrix / Sent / Sender rules, accounts as
+>   coloured labels, collapsible Categories, sync status) · one white panel for content.
+>   Tablets get a rail of icons; phones a drawer, a search pill on top and a Compose button
+>   bottom right.
+> - **Inbox = tabs**, like Primary / Promotions / Social: Do now · Schedule · Quick reply · Later
+>   (· Not sorted while the AI works). The tab underline and "N new" badge use the quadrant
+>   colour. The four-box matrix is a view in the sidebar, no longer the first screen.
+> - **Rows**, Gmail density: sender · label chips + subject – AI summary · date; unread rows
+>   white and bold, read rows `--row-read`; hover lifts the row and shows mark read/unread.
+>   Phones: avatar, sender + time, subject, two-line summary.
+> - **Reading view** replaces the list (Gmail default; "Reading pane on the right" in
+>   settings for ≥1280px): toolbar icons (back, read, Move to, reply, newer/older, Open in
+>   Gmail), subject + labels, the AI card (Gmail's summary card), sender line with avatar,
+>   body, and Reply · Reply all · Forward pills that open an inline reply.
+> - **Compose:** Gmail's floating window bottom right (minimise, full screen, close),
+>   From / To (Cc Bcc) / Subject rows, borderless body, lime **Send**, **Help me write**
+>   (AI draft, `--ai-bg`), trash. Full screen on phones; a full page without JS.
+> - **Snackbar:** bottom left, inverse colours, actions in `--snack-action` (Undo, View).
+> - **One lime per area** still holds: Compose in the sidebar, Send in compose.
+
 Status: approved direction for the redesign · Scope: `app/web/templates/*`, `app/web/static/{style.css,app.js}`, new `app/web/static/prefs.js` · Backend: none required (3 optional one-liners in §12).
 
 Inputs merged here: the Wise design language (`docs/design/DESIGN-wise.md`), Apple Liquid Glass (WWDC25 219/356, HIG Materials), Apple fluid-motion rules and the eight principles, the 20 UX laws, the research and audit run on the real situation (4 accounts, 325 emails, 313 unsorted). Where an earlier note in this repo conflicts with this file, follow this file.

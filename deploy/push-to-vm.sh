@@ -57,7 +57,9 @@ COPYFILE_DISABLE=1 tar czf - ${TARFLAGS[@]+"${TARFLAGS[@]}"} --exclude=./.venv -
   run "mkdir -p ~/$DIR && tar xzf - -C ~/$DIR --warning=no-unknown-keyword"
 
 say "Setting up the VM (packages, service, private HTTPS address)"
-run "cd ~/$DIR && bash deploy/setup-vm.sh --from-mac"
+# the VM shows times in this Mac's time zone (e.g. Asia/Kolkata), not UTC
+TZ_NAME="$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##' | tr -cd 'A-Za-z0-9_+/-')"
+run "cd ~/$DIR && INBOX_TZ='$TZ_NAME' bash deploy/setup-vm.sh --from-mac"
 
 if [ "$SETTINGS" = 1 ]; then
   say "Sending your accounts, mailbox passwords and AI settings"

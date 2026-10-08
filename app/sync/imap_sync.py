@@ -7,6 +7,7 @@ Mail is never marked as read and nothing is changed on the server.
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
+from email.utils import formataddr
 
 from bs4 import BeautifulSoup
 from imap_tools import AND, U, MailBox, MailMessage
@@ -78,6 +79,13 @@ def one_line(text: str) -> str:
 
 
 HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+REFERENCES_CHARS = 2000  # a long thread's References header; the newest ids are at the end
+
+
+def _addresses(values) -> str | None:
+    """'Name <a@b.com>, c@d.com' (names quoted when they contain commas), or None."""
+    out = [formataddr((v.name or "", v.email)) for v in values or () if v.email]
+    return ", ".join(out) or None
 
 
 def parse_message(msg: MailMessage) -> dict:
@@ -103,6 +111,9 @@ def parse_message(msg: MailMessage) -> dict:
         # a cut-off download can miss an attachment that starts late; big mail nearly always has one
         "has_attachments": int(bool(msg.attachments) or msg.size_rfc822 > MAX_FETCH_BYTES),
         "list_unsubscribe": (headers.get("list-unsubscribe") or ("",))[0] or None,
+        "reply_to": _addresses(msg.reply_to_values),
+        "cc_email": _addresses(msg.cc_values),
+        "references_hdr": one_line((headers.get("references") or ("",))[0])[-REFERENCES_CHARS:] or None,
     }
 
 
@@ -163,7 +174,7 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
 def refresh_bodies(conn, account: config.Account, since_iso: str,
                    mailbox_factory=connect_mailbox, progress=None) -> int:
     """Re-download the text of mail already saved since `since_iso` (after a parsing fix).
-    Only body_text and snippet change; scores, read state and corrections are kept.
+    Only the text and reply headers change; scores, read state and corrections are kept.
     `progress(done, total)` is called after every batch."""
     row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
     uids = [str(r["uid"]) for r in conn.execute(
@@ -184,8 +195,10 @@ def refresh_bodies(conn, account: config.Account, since_iso: str,
         for start in range(0, len(uids), FETCH_BULK):  # newest first, one batch per commit
             for msg in fetch_messages(mailbox, uids[start:start + FETCH_BULK]):
                 m = parse_message(msg)
-                conn.execute("UPDATE messages SET body_text = ?, snippet = ? WHERE account_id = ? AND uid = ?",
-                             (m["body_text"], m["snippet"], row["id"], m["uid"]))
+                conn.execute("""UPDATE messages SET body_text = ?, snippet = ?, reply_to = ?, cc_email = ?,
+                                references_hdr = ? WHERE account_id = ? AND uid = ?""",
+                             (m["body_text"], m["snippet"], m["reply_to"], m["cc_email"],
+                              m["references_hdr"], row["id"], m["uid"]))
                 updated += 1
             conn.commit()
             if progress:

@@ -18,6 +18,7 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from email.utils import getaddresses
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
@@ -27,11 +28,15 @@ from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import config, db
+from app.ai import drafts
 from app.ai.scoring import QUADRANTS, quadrant
+from app.send import message as mail
+from app.send import outbox
 from app.web import auth
 
 log = logging.getLogger(__name__)
@@ -39,10 +44,15 @@ log = logging.getLogger(__name__)
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
 
-LIST_LIMIT = 300  # emails in the list view
+LIST_LIMIT = 300  # emails in a list (inbox tab, All mail)
 COLUMN_LIMIT = 100  # emails per matrix column
 GROUPS = tuple(QUADRANTS)  # do, schedule, quick, later
 ACTIONS = {"do": "Do now", "schedule": "Schedule", "quick": "Quick reply", "later": "Later"}
+VIEWS = ("inbox", "all", "matrix")  # inbox: one tab per quadrant, like Gmail's Primary/Social/...
+TABS = (*GROUPS, "unsorted")
+COMPOSE_TITLES = {"new": "New message", "reply": "Reply", "all": "Reply all", "forward": "Forward"}
+AVATAR_COLORS = ("#b3261e", "#8e3a9d", "#3949ab", "#00796b", "#2e7d32", "#c2410c", "#5d4037",
+                 "#455a64", "#ad1457", "#1565c0")
 MOVES = {"do": (5, 5), "schedule": (5, 2), "quick": (2, 5), "later": (2, 2)}
 RULE_KINDS = {
     "vip": "Always important (VIP)",
@@ -61,11 +71,13 @@ CATEGORY_RE = re.compile(r"[a-z0-9][a-z0-9 _-]{0,29}")
 PATTERN_RE = re.compile(r"[^@\s]*@[^@\s]+\.[^@\s]+")
 
 CARD_COLUMNS = """SELECT m.id, m.message_id, m.from_name, m.from_email, m.subject, m.snippet,
-    m.received_at, m.is_read, m.has_attachments, m.importance, m.urgency, m.category,
+    m.received_at, m.is_read, m.has_attachments, m.answered_at, m.importance, m.urgency, m.category,
     m.action_needed, m.deadline, m.summary, m.reason, m.priority_score, m.scored_by,
     a.label AS account_label, a.email AS account_email, a.color AS account_color"""
 FROM = " FROM messages m JOIN accounts a ON a.id = m.account_id"
-ORDER = " ORDER BY m.priority_score IS NULL, m.priority_score DESC, m.received_at DESC, m.id DESC"
+# answered mail sinks below what still waits for you; otherwise highest priority first
+ORDER = (" ORDER BY m.answered_at IS NOT NULL, m.priority_score IS NULL, m.priority_score DESC,"
+         " m.received_at DESC, m.id DESC")
 
 FormStr = Annotated[str | None, Form()]
 NextField = Annotated[str | None, Form(alias="next")]
@@ -75,7 +87,8 @@ NextField = Annotated[str | None, Form(alias="next")]
 class Filters:
     """What the inbox page shows; kept in the query string across views."""
 
-    view: str = "matrix"
+    view: str = "inbox"
+    tab: str = "do"
     account: str = ""
     q: str = ""
     unread: bool = False
@@ -84,8 +97,11 @@ class Filters:
 
     @classmethod
     def from_query(cls, params) -> "Filters":
+        view = params.get("view", "")
+        view = "all" if view == "list" else view if view in VIEWS else "inbox"
+        tab = params.get("tab", "")
         return cls(
-            view="list" if params.get("view") == "list" else "matrix",
+            view=view, tab=tab if tab in TABS else "do",
             account=params.get("account", "").strip(),
             q=params.get("q", "").strip()[:200],
             unread=params.get("unread", "") in ("1", "on", "true"),
@@ -99,10 +115,12 @@ class Filters:
 
     def url(self, **changes) -> str:
         """Inbox URL with these filters, overridden by `changes`; empty values are dropped."""
-        params = {"view": self.view, "account": self.account, "q": self.q,
+        params = {"view": self.view, "tab": self.tab, "account": self.account, "q": self.q,
                   "unread": "1" if self.unread else "", "category": self.category,
                   "sorted": "no" if self.unsorted else "", **changes}
-        if params["view"] == "matrix":
+        if params["view"] != "inbox" or params["tab"] == "do":
+            params["tab"] = ""
+        if params["view"] == "inbox":
             params["view"] = ""
         params = {k: v for k, v in params.items() if v not in ("", None, False)}
         return "/?" + urlencode(params) if params else "/"
@@ -277,11 +295,19 @@ def _int(value) -> int | None:
 
 # --- queries --------------------------------------------------------------------------
 
+def _avatar(name: str | None, email: str | None) -> dict:
+    """Gmail-style round initial; the colour is fixed per sender."""
+    key = (email or name or "?").strip().lower()
+    letter = next((ch for ch in (name or email or "?") if ch.isalnum()), "?").upper()
+    return {"letter": letter, "color": AVATAR_COLORS[sum(map(ord, key)) % len(AVATAR_COLORS)]}
+
+
 def _card(row) -> dict:
     """A message row plus everything the templates need to show it."""
     m = dict(row)
     m["quad"] = quadrant(m["importance"], m["urgency"])
     m["sender"] = m["from_name"] or m["from_email"] or "(unknown sender)"
+    m["avatar"] = _avatar(m["from_name"], m["from_email"])
     m["color"] = _color(m.get("account_color"))
     m["when"], m["when_full"] = _when(m["received_at"])
     m["due"] = _due(m["deadline"])
@@ -340,6 +366,26 @@ def _matrix(conn, f: Filters) -> tuple[list[dict], dict, int]:
     return columns, unsorted, stats["total"]
 
 
+def _tabs(conn, f: Filters) -> tuple[list[dict], list[dict], int]:
+    """Inbox tabs (one per quadrant, plus "Not sorted" while the AI works) and the open tab's mail."""
+    where, args = f.where()
+    stats, pairs = _counts(conn, where, args)
+    tabs = [{"key": k, "title": ACTIONS[k], "total": stats["quadrants"][k],
+             "unread": stats["quadrant_unread"][k]} for k in GROUPS]
+    if stats["unscored"] or f.tab == "unsorted":
+        tabs.append({"key": "unsorted", "title": "Not sorted", "total": stats["unscored"],
+                     "unread": None})
+    if f.tab == "unsorted":
+        cards = _fetch(conn, where, args, "m.importance IS NULL OR m.urgency IS NULL", [])
+        total = stats["unscored"]
+    else:
+        found = sorted(pairs[f.tab])
+        cond = " OR ".join("(m.importance = ? AND m.urgency = ?)" for _ in found)
+        cards = _fetch(conn, where, args, cond, [v for p in found for v in p]) if found else []
+        total = stats["quadrants"][f.tab]
+    return tabs, cards, total
+
+
 def _categories(conn, f: Filters | None = None) -> list[str]:
     """Categories in the database; with filters, only those that still have mail under the
     other filters (so the Category menu never offers a dead end)."""
@@ -392,10 +438,13 @@ def _page(request: Request, conn, f: Filters, **extra) -> dict:
             seen.add(a["email"])
             chips.append({"email": a["email"], "label": a["label"], "color": a["color"],
                           "unread": unread.get(a["email"], 0)})
+    synced = [a["last_synced_at"] for a in accounts if a["last_synced_at"]]
     return {
         "f": f, "accounts": accounts, "chips": chips, "stats": _counts(conn)[0],
         "categories": _categories(conn, f), "ai_calls": db.ai_calls_today(conn, _utc_day()),
-        "ai_max": config.MAX_AI_CALLS_PER_DAY,
+        "ai_max": config.MAX_AI_CALLS_PER_DAY, "send_failures": outbox.failed(conn),
+        "last_sync": _ago(max(synced)) if synced else None,
+        "problems": [a for a in accounts if a["last_error"]],
         "here": request.url.path + (f"?{request.url.query}" if request.url.query else ""),
         **extra,
     }
@@ -461,7 +510,8 @@ def _secure_cookie(request: Request) -> bool:
 
 def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                on_sync_now: Callable[[], dict] | None = None,
-               password_hash: str | None = None, totp_secret: str | None = None) -> FastAPI:
+               password_hash: str | None = None, totp_secret: str | None = None,
+               accounts_loader: Callable[[], list] | None = None) -> FastAPI:
     """conn_factory() opens a new SQLite connection (one per request, closed afterwards).
     on_sync_now() runs a sync + AI pass and returns a dict of results for the status line;
     without it the Sync button just says sync is not available."""
@@ -618,12 +668,17 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         open_id = _int(request.query_params.get("open"))
         with connect() as conn:
             ctx = _page(request, conn, f, page=f.view, open_id=open_id, msg=None)
-            if f.view == "list":
+            if f.view == "all":
                 where, args = f.where()
                 ctx["cards"] = _fetch(conn, where, args, limit=LIST_LIMIT)
                 ctx["total"] = conn.execute("SELECT COUNT(*)" + FROM + where, args).fetchone()[0]
-            else:
+                ctx["unsorted"] = {"total": 0}
+            elif f.view == "matrix":
                 ctx["columns"], ctx["unsorted"], ctx["total"] = _matrix(conn, f)
+            else:
+                ctx["tabs"], ctx["cards"], ctx["total"] = _tabs(conn, f)
+                ctx["unsorted"] = {"total": ctx["stats"]["unscored"] if not f.active else
+                                   next((t["total"] for t in ctx["tabs"] if t["key"] == "unsorted"), 0)}
             if open_id is not None:
                 ctx.update(msg=_detail(conn, open_id), next_url=f.url(open=open_id),
                            close_url=f.url())
@@ -749,6 +804,213 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             text, ok = _cycle_summary(result)
             return _reply(request, text, next_url, ok=ok, status=200, result=result)
         return _reply(request, "Sync done. " + _sync_summary(result), next_url, result=result)
+
+    # --- writing mail ---------------------------------------------------------------------
+    def load_accounts() -> list[config.Account]:
+        try:
+            return list((accounts_loader or (lambda: config.load_accounts(config.ACCOUNTS_FILE)))())
+        except SystemExit:  # no accounts.yaml
+            return []
+
+    def compose_ctx(conn, *, mode: str = "new", reply_id: int | None = None, from_email: str = "",
+                    draft=None, values: dict | None = None, error: str = "", nxt: str = "/",
+                    variant: str = "page") -> dict:
+        accounts = load_accounts()
+        if draft is not None:
+            mode, reply_id, from_email = draft["mode"], draft["reply_to_id"], draft["account_email"]
+        mode = mode if mode in mail.MODES else "new"
+        original = db.get_message(conn, reply_id) if reply_id and mode != "new" else None
+        if mode != "new" and original is None:
+            mode, error = "new", error or "The email you were answering is no longer here."
+        v = {"to": "", "cc": "", "bcc": "", "subject": "", "body": "", "include_quote": True,
+             "instruction": ""}
+        if original is not None:
+            from_email = from_email or original["account_email"]
+            if mode == "forward":
+                v["subject"] = mail.forward_subject(original["subject"])
+            else:
+                to, cc = mail.reply_recipients(original, mode, {a.email.lower() for a in accounts})
+                v.update(to=mail.format_addresses(to), cc=mail.format_addresses(cc),
+                         subject=mail.reply_subject(original["subject"]))
+        if draft is not None:
+            v.update(to=draft["to_addrs"], cc=draft["cc_addrs"], bcc=draft["bcc_addrs"],
+                     subject=draft["subject"], body=draft["body"],
+                     include_quote=bool(draft["include_quote"]))
+        v.update({k: val for k, val in (values or {}).items() if val is not None})
+        emails = [a.email for a in accounts]
+        if from_email.lower() not in (e.lower() for e in emails):
+            from_email = emails[0] if emails else ""
+        quote = None
+        if original is not None:
+            quote = mail.forward_block(original) if mode == "forward" else mail.quote_reply(original)
+        return {
+            "mode": mode, "title": COMPOSE_TITLES[mode], "original": _card(original) if original else None,
+            "v": v, "quote": quote, "send_accounts": accounts, "from_email": from_email,
+            "draft_id": draft["id"] if draft is not None else None, "compose_error": error,
+            "compose_next": nxt, "variant": variant, "undo_seconds": outbox.UNDO_SECONDS,
+            "draft_key": f"draft:{mode}:{original['id'] if original is not None else 'new'}",
+        }
+
+    def compose_page(request: Request, conn, cctx: dict, status: int = 200):
+        ctx = _page(request, conn, Filters(), page="compose", **cctx)
+        return render(request, "compose.html", ctx, status)
+
+    def compose_values(form: dict) -> dict:
+        return {"to": form.get("to") or "", "cc": form.get("cc") or "", "bcc": form.get("bcc") or "",
+                "subject": form.get("subject") or "", "body": form.get("body") or "",
+                "include_quote": form.get("include_quote") not in (None, "", "0"),
+                "instruction": form.get("instruction") or ""}
+
+    @app.get("/compose")
+    def compose(request: Request, mode: str = "new", reply: str = "", draft: str = "",
+                partial: str = "", from_email: Annotated[str, Query(alias="from")] = "",
+                next_url: Annotated[str, Query(alias="next")] = ""):
+        nxt = _safe_next(next_url)
+        with connect() as conn:
+            draft_row = outbox.get(conn, _int(draft)) if _int(draft) else None
+            if draft_row is not None and draft_row["status"] not in ("cancelled", "failed"):
+                draft_row = None  # only an undone or failed email can be edited again
+            cctx = compose_ctx(conn, mode=mode, reply_id=_int(reply), from_email=from_email,
+                               draft=draft_row, nxt=nxt,
+                               variant=partial if partial in ("inline", "window") else "page")
+            if partial:
+                return templates.TemplateResponse(request, "_compose.html", cctx)
+            return compose_page(request, conn, cctx)
+
+    async def read_form(request: Request) -> dict:
+        form = await request.form()
+        return {k: (v if isinstance(v, str) else None) for k, v in form.items()}
+
+    @app.post("/compose/send")
+    async def compose_send(request: Request):
+        form = await read_form(request)
+        return await run_in_threadpool(send_mail, request, form)
+
+    def send_mail(request: Request, form: dict):
+        nxt = _safe_next(form.get("next"))
+        mode = form.get("mode") if form.get("mode") in mail.MODES else "new"
+        reply_id = _int(form.get("reply_id"))
+        values = compose_values(form)
+        account = outbox.account_for(form.get("from_account") or "", load_accounts())
+
+        def fail(message: str, field: str | None = None):
+            if _wants_json(request):
+                return JSONResponse({"ok": False, "message": message, "field": field}, status_code=400)
+            with connect() as conn:
+                cctx = compose_ctx(conn, mode=mode, reply_id=reply_id,
+                                   from_email=form.get("from_account") or "", values=values,
+                                   error=message, nxt=nxt)
+                return compose_page(request, conn, cctx, 400)
+
+        if account is None:
+            return fail("Pick the account to send from.", "from_account")
+        groups = {}
+        for field in ("to", "cc", "bcc"):
+            try:
+                groups[field] = mail.parse_addresses(values[field])
+            except mail.AddressError as exc:
+                return fail(f"{field.capitalize()}: {exc}.", field)
+        if not any(groups.values()):
+            return fail("Add at least one recipient.", "to")
+        if sum(map(len, groups.values())) > mail.MAX_RECIPIENTS:
+            return fail(f"At most {mail.MAX_RECIPIENTS} recipients per email.", "to")
+        if len(values["body"]) > mail.MAX_BODY_CHARS:
+            return fail("The message is too long.", "body")
+        with connect() as conn:
+            original = db.get_message(conn, reply_id) if reply_id and mode != "new" else None
+            if mode != "new" and original is None:
+                return fail("The email you were answering is no longer here.")
+            in_reply_to, references = (mail.thread_headers(original) if mode in ("reply", "all")
+                                       else (None, None))
+            oid = outbox.queue(
+                conn, account_email=account.email, mode=mode,
+                reply_to_id=original["id"] if original is not None else None,
+                to=mail.format_addresses(groups["to"]), cc=mail.format_addresses(groups["cc"]),
+                bcc=mail.format_addresses(groups["bcc"]), subject=mail.clean_subject(values["subject"]),
+                body=values["body"], include_quote=values["include_quote"],
+                full_text=mail.full_text(values["body"], mode, original, values["include_quote"]),
+                in_reply_to=in_reply_to, references=references)
+            if _int(form.get("draft_id")):
+                outbox.discard(conn, _int(form.get("draft_id")))
+            conn.commit()
+        return _reply(request, f"Sending in {outbox.UNDO_SECONDS} seconds…", nxt, id=oid,
+                      undo_seconds=outbox.UNDO_SECONDS, next=nxt)
+
+    @app.post("/compose/draft")
+    async def compose_draft(request: Request):
+        form = await read_form(request)
+        return await run_in_threadpool(ai_draft, request, form)
+
+    def ai_draft(request: Request, form: dict):
+        nxt = _safe_next(form.get("next"))
+        mode = form.get("mode") if form.get("mode") in mail.MODES else "new"
+        reply_id = _int(form.get("reply_id"))
+        values = compose_values(form)
+        account = outbox.account_for(form.get("from_account") or "", load_accounts())
+        with connect() as conn:
+            original = db.get_message(conn, reply_id) if reply_id and mode != "new" else None
+            try:
+                text = drafts.write(conn, mode=mode, original=original,
+                                    instruction=values["instruction"],
+                                    from_name=account.from_name if account else "")
+            except drafts.DraftError as exc:
+                if _wants_json(request):
+                    return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+                cctx = compose_ctx(conn, mode=mode, reply_id=reply_id,
+                                   from_email=form.get("from_account") or "", values=values,
+                                   error=str(exc), nxt=nxt)
+                return compose_page(request, conn, cctx, 422)
+            if _wants_json(request):
+                return JSONResponse({"ok": True, "message": "Draft ready", "text": text})
+            values["body"] = text
+            cctx = compose_ctx(conn, mode=mode, reply_id=reply_id,
+                               from_email=form.get("from_account") or "", values=values, nxt=nxt)
+            return compose_page(request, conn, cctx)
+
+    @app.post("/outbox/{outbox_id}/undo")
+    def undo_send(request: Request, outbox_id: int):
+        with connect() as conn:
+            stopped = outbox.cancel(conn, outbox_id)
+            conn.commit()
+            row = outbox.get(conn, outbox_id)
+        if row is None:
+            raise HTTPException(404, "That email isn't in the outbox")
+        if not stopped:
+            return _reply(request, "Too late to undo: it has already gone out." if row["status"] in
+                          ("sending", "sent") else "It wasn't waiting to be sent.", "/sent",
+                          ok=False, status=409, status_text=row["status"])
+        edit = f"/compose?draft={outbox_id}"
+        return _reply(request, "Sending undone", edit, edit_url=edit)
+
+    @app.post("/outbox/{outbox_id}/discard")
+    def discard_send(request: Request, outbox_id: int, next_url: NextField = None):
+        with connect() as conn:
+            gone = outbox.discard(conn, outbox_id)
+            conn.commit()
+        return _reply(request, "Discarded" if gone else "Nothing to discard", next_url or "/sent",
+                      ok=gone, status=None if gone else 409)
+
+    @app.get("/api/outbox/{outbox_id}")
+    def outbox_status(outbox_id: int):
+        with connect() as conn:
+            row = outbox.get(conn, outbox_id)
+        if row is None:
+            raise HTTPException(404, "That email isn't in the outbox")
+        return {"id": row["id"], "status": row["status"], "error": row["error"], "note": row["note"],
+                "subject": row["subject"]}
+
+    @app.get("/sent")
+    def sent_page(request: Request):
+        with connect() as conn:
+            rows = []
+            for r in outbox.history(conn):
+                item = dict(r)
+                item["when"], item["when_full"] = _when(r["sent_at"] or r["created_at"])
+                item["who"] = ", ".join(n or a for n, a in getaddresses(
+                    [r["to_addrs"], r["cc_addrs"], r["bcc_addrs"]]) if a)[:200]
+                rows.append(item)
+            ctx = _page(request, conn, Filters(), page="sent", sent=rows)
+        return render(request, "sent.html", ctx)
 
     @app.get("/api/stats")
     def api_stats():

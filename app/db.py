@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read         INTEGER NOT NULL DEFAULT 0,
     has_attachments INTEGER NOT NULL DEFAULT 0,
     list_unsubscribe TEXT,
+    -- for replies: who to answer, who else was on it, and the thread it belongs to
+    reply_to        TEXT,
+    cc_email        TEXT,
+    references_hdr  TEXT,
+    answered_at     TEXT,
     -- filled in by the AI step (step 3)
     importance      INTEGER,
     urgency         INTEGER,
@@ -94,6 +99,33 @@ CREATE TABLE IF NOT EXISTS auth_state (
     value TEXT NOT NULL
 );
 
+-- mail you write: waits a few seconds (Undo), then goes out over the account's SMTP server.
+-- status: queued -> sending -> sent | failed; queued -> cancelled (Undo)
+CREATE TABLE IF NOT EXISTS outbox (
+    id              INTEGER PRIMARY KEY,
+    account_email   TEXT NOT NULL,
+    mode            TEXT NOT NULL DEFAULT 'new',
+    reply_to_id     INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    to_addrs        TEXT NOT NULL DEFAULT '',
+    cc_addrs        TEXT NOT NULL DEFAULT '',
+    bcc_addrs       TEXT NOT NULL DEFAULT '',
+    subject         TEXT NOT NULL DEFAULT '',
+    body            TEXT NOT NULL DEFAULT '',
+    include_quote   INTEGER NOT NULL DEFAULT 1,
+    full_text       TEXT NOT NULL DEFAULT '',
+    in_reply_to     TEXT,
+    references_hdr  TEXT,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    send_after      TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    note            TEXT,
+    message_id      TEXT,
+    created_at      TEXT NOT NULL,
+    sent_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, send_after);
+
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_unscored ON messages(scored_by) WHERE scored_by IS NULL;
 """
@@ -101,7 +133,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_unscored ON messages(scored_by) WHERE sc
 MESSAGE_FIELDS = (
     "uid", "message_id", "from_name", "from_email", "to_email", "subject", "snippet",
     "body_text", "received_at", "is_read", "has_attachments", "list_unsubscribe",
+    "reply_to", "cc_email", "references_hdr",
 )
+NEW_MESSAGE_COLUMNS = ("reply_to", "cc_email", "references_hdr", "answered_at")
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -122,6 +156,13 @@ def _migrate(conn) -> None:
         conn.execute("UPDATE messages SET priority_score = priority_score + 0.5 "
                      "WHERE is_read = 1 AND priority_score IS NOT NULL")
         conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    if version < 2:  # sending: reply headers on saved mail (filled for new mail from now on)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+        for col in NEW_MESSAGE_COLUMNS:
+            if col not in have:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        conn.execute("PRAGMA user_version = 2")
         conn.commit()
 
 
@@ -149,7 +190,7 @@ def insert_messages(conn, account_id: int, messages: list[dict]) -> int:
     marks = ", ".join("?" * (len(MESSAGE_FIELDS) + 1))
     cur = conn.executemany(
         f"INSERT OR IGNORE INTO messages ({cols}) VALUES ({marks})",
-        [(account_id, *(m[f] for f in MESSAGE_FIELDS)) for m in messages],
+        [(account_id, *(m.get(f) for f in MESSAGE_FIELDS)) for m in messages],
     )
     return cur.rowcount
 

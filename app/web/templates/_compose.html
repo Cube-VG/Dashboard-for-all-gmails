@@ -1,0 +1,88 @@
+{# One compose form for every place it appears: floating window (new mail), inline under an email
+   (reply / forward) and the full page (phones, and everything without JavaScript). #}
+{% set inline = variant == "inline" %}
+{% set show_cc = v.cc or v.bcc %}
+<form class="compose compose-{{ variant }}" method="post" action="/compose/send" data-compose data-draft-key="{{ draft_key }}" data-mode="{{ mode }}" aria-label="{{ title }}"{% if original %} data-reply-id="{{ original.id }}"{% endif %}>
+  {# Enter in a field must never send (or draft): a disabled first submit button blocks implicit submission #}
+  <button type="submit" disabled hidden aria-hidden="true" tabindex="-1"></button>
+  <input type="hidden" name="mode" value="{{ mode }}">
+  <input type="hidden" name="next" value="{{ compose_next }}">
+  {% if original %}<input type="hidden" name="reply_id" value="{{ original.id }}">{% endif %}
+  {% if draft_id %}<input type="hidden" name="draft_id" value="{{ draft_id }}">{% endif %}
+  {% if variant == "window" %}
+  <div class="compose-head">
+    <span class="compose-title">{{ title }}</span>
+    <button type="button" class="icon-btn" data-compose-min aria-label="Minimize" title="Minimize"><svg class="ic" aria-hidden="true"><use href="#i-minimize"/></svg></button>
+    <button type="button" class="icon-btn" data-compose-max aria-label="Full screen" title="Full screen"><svg class="ic" aria-hidden="true"><use href="#i-maximize"/></svg></button>
+    <button type="button" class="icon-btn" data-compose-close aria-label="Save &amp; close" title="Save &amp; close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  {% elif inline %}
+  <div class="compose-inline-head">
+    <span class="avatar sm" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#{{ 'i-forward' if mode == 'forward' else 'i-reply-all' if mode == 'all' else 'i-reply' }}"/></svg></span>
+    <span class="compose-title">{{ title }}</span>
+  </div>
+  {% endif %}
+  {% if compose_error %}<p class="compose-error field-error" role="alert"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg>{{ compose_error }}</p>{% endif %}
+  <div class="compose-fields">
+    {% if send_accounts|length > 1 %}
+    <label class="cf-row"><span class="cf-label">From</span>
+      <select name="from_account" class="cf-input cf-select">
+        {% for a in send_accounts %}<option value="{{ a.email }}"{% if a.email|lower == from_email|lower %} selected{% endif %}>{{ a.label }} &lt;{{ a.email }}&gt;</option>{% endfor %}
+      </select>
+    </label>
+    {% elif send_accounts %}
+    <input type="hidden" name="from_account" value="{{ send_accounts[0].email }}">
+    {% else %}
+    <p class="cf-row cf-note">No accounts to send from: list them in accounts.yaml.</p>
+    {% endif %}
+    <div class="cf-row">
+      <label class="cf-label" for="to-{{ variant }}">To</label>
+      <input id="to-{{ variant }}" class="cf-input" name="to" value="{{ v.to }}" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false" placeholder="name@example.com, …" {% if mode == "forward" or mode == "new" %}autofocus{% endif %}>
+      <span class="cf-more{% if show_cc %} js-hidden{% endif %}" data-cc-links><button type="button" class="cf-link" data-show-cc>Cc</button><button type="button" class="cf-link" data-show-cc>Bcc</button></span>
+    </div>
+    <div class="cf-row cc-row{% if not show_cc %} js-collapsed{% endif %}">
+      <label class="cf-label" for="cc-{{ variant }}">Cc</label>
+      <input id="cc-{{ variant }}" class="cf-input" name="cc" value="{{ v.cc }}" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="cf-row cc-row{% if not show_cc %} js-collapsed{% endif %}">
+      <label class="cf-label" for="bcc-{{ variant }}">Bcc</label>
+      <input id="bcc-{{ variant }}" class="cf-input" name="bcc" value="{{ v.bcc }}" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false">
+    </div>
+    {% if inline %}
+    <input type="hidden" name="subject" value="{{ v.subject }}">
+    {% else %}
+    <label class="cf-row"><span class="cf-label">Subject</span>
+      <input class="cf-input" name="subject" value="{{ v.subject }}" maxlength="400" placeholder="{{ '' if mode == 'new' else '' }}">
+    </label>
+    {% endif %}
+  </div>
+  <textarea class="compose-body" name="body" rows="{{ 7 if inline else 12 }}" aria-label="Message" placeholder="{{ 'Write your reply' if mode in ('reply', 'all') else 'Add a note' if mode == 'forward' else 'Message' }}"{% if mode in ('reply', 'all') %} autofocus{% endif %}>{{ v.body }}</textarea>
+  {% if quote %}
+  <details class="quoted"{% if mode == "forward" %} open{% endif %}>
+    <summary title="{{ 'The forwarded email' if mode == 'forward' else 'Show the email you are replying to' }}"><span aria-hidden="true">•••</span><span class="sr-only">{{ 'Forwarded email' if mode == 'forward' else 'Original email' }}</span></summary>
+    <div class="quoted-text">{{ quote }}</div>
+    {% if mode in ("reply", "all") %}
+    <label class="check"><input type="checkbox" name="include_quote" value="1"{% if v.include_quote %} checked{% endif %}> Include the original email below my reply</label>
+    {% endif %}
+    {% if mode == "forward" and original and original.has_attachments %}<p class="hint">Attachments aren't forwarded yet: only the text of the email goes along.</p>{% endif %}
+  </details>
+  {% endif %}
+  <div class="help-write js-collapsed" data-help-row>
+    <svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg>
+    <label class="sr-only" for="help-{{ variant }}">Help me write</label>
+    <input id="help-{{ variant }}" class="cf-input" name="instruction" value="{{ v.instruction }}" maxlength="1000" placeholder="{{ 'What should the reply say? e.g. Yes, Tuesday 3 pm works' if mode in ('reply', 'all') else 'What do you want to write? e.g. Ask Sam for the March invoice' if mode == 'new' else 'A note to go with it (optional)' }}">
+    <button class="btn btn-secondary sm" formaction="/compose/draft" data-ai-draft>Create</button>
+  </div>
+  <div class="compose-bar">
+    <button class="btn btn-primary send-btn" data-send title="Send (⌘ Enter)" aria-keyshortcuts="Meta+Enter Control+Enter"><span>Send</span><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></button>
+    <button type="button" class="btn btn-text help-btn" data-help-toggle aria-expanded="false" title="Help me write: the AI drafts it, you edit and send"><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg><span>Help me write</span></button>
+    <span class="spacer"></span>
+    <span class="compose-status" data-compose-status aria-live="polite"></span>
+    {% if variant == "page" %}
+    <a class="icon-btn" href="{{ compose_next }}" data-compose-discard aria-label="Discard draft" title="Discard draft"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></a>
+    {% else %}
+    <button type="button" class="icon-btn" data-compose-discard aria-label="Discard draft" title="Discard draft"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
+    {% endif %}
+  </div>
+  <p class="compose-foot hint">Sends from {{ from_email or "your account" }} after {{ undo_seconds }} seconds, so you can still undo it.</p>
+</form>

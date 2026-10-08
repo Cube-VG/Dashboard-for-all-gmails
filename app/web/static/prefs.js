@@ -15,5 +15,7 @@
   if (get("glass") === "off") d.setAttribute("data-glass", "off");
   if (get("keys") === "off") d.setAttribute("data-keys", "off");
   if (get("advance") === "off") d.setAttribute("data-advance", "off");
+  if (get("split") === "on") d.setAttribute("data-split", "on");
+  if (get("rail") === "on") d.setAttribute("data-rail", "on");
   d.classList.add("js");
 })();

@@ -23,3 +23,10 @@ accounts:
     imap_port: 993          # optional, 993 is the default
     folder: INBOX           # optional, INBOX is the default
     color: "#188038"
+    # Sending (all optional). The outgoing server is worked out from imap_host:
+    # imap.gmail.com -> smtp.gmail.com, imap.hostinger.com -> smtp.hostinger.com, and a
+    # host like mail.yourdomain.com is used for both. Port 465 (SSL) unless you say 587.
+    # smtp_host: smtp.yourdomain.com
+    # smtp_port: 465        # 587 for STARTTLS
+    # from_name: Your Name  # the name people see on your mail (any account can have it)
+    # sent_folder: INBOX.Sent   # where copies of sent mail go; found automatically

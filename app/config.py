@@ -30,6 +30,13 @@ AI_FALLBACK_MODEL = os.getenv("AI_FALLBACK_MODEL", "google/gemma-4-26b-a4b-it")
 MAX_AI_CALLS_PER_DAY = int(os.getenv("MAX_AI_CALLS_PER_DAY", "50"))
 
 
+def default_smtp_host(imap_host: str) -> str:
+    """imap.gmail.com -> smtp.gmail.com, imap.hostinger.com -> smtp.hostinger.com; a host
+    without the imap. prefix (cPanel's mail.yourdomain.com) usually handles both."""
+    host = (imap_host or "").strip().lower()
+    return "smtp." + host[5:] if host.startswith("imap.") else host
+
+
 @dataclass
 class Account:
     label: str
@@ -39,9 +46,26 @@ class Account:
     folder: str = "INBOX"
     color: str = "#5f6368"
     username: str = ""  # defaults to email
+    # sending (all optional): worked out from imap_host when left out
+    smtp_host: str = ""
+    smtp_port: int = 0  # 465 for ssl, 587 for starttls
+    smtp_security: str = ""  # "ssl" (default) or "starttls"
+    sent_folder: str = ""  # where copies of sent mail go; found automatically
+    from_name: str = ""  # the name people see on your mail, e.g. "Sam Lee"
 
     def __post_init__(self):
         self.username = self.username or self.email
+        self.smtp_host = (self.smtp_host or default_smtp_host(self.imap_host)).strip()
+        security = (self.smtp_security or "").strip().lower()
+        if security not in ("ssl", "starttls"):
+            security = "starttls" if int(self.smtp_port or 0) == 587 else "ssl"
+        self.smtp_security = security
+        self.smtp_port = int(self.smtp_port or (587 if security == "starttls" else 465))
+
+    @property
+    def is_gmail(self) -> bool:
+        """Gmail files mail sent over SMTP in Sent by itself (an extra copy would duplicate it)."""
+        return self.smtp_host.lower() in ("smtp.gmail.com", "smtp.googlemail.com")
 
 
 def load_accounts(path: Path = ACCOUNTS_FILE) -> list[Account]:
