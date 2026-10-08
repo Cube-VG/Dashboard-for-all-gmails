@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VM="${VM:-inbox@inbox}"            # user@host on your Tailscale (create-vm.sh makes both "inbox")
+VM_NAME="${VM_NAME:-inbox}"        # the VM's name in Tailscale (create-vm.sh calls it "inbox")
 DIR="dashboard-for-all-gmails"     # folder in the VM user's home
 SSH="${SSH:-ssh}"
 SETTINGS=0; DATA=0
@@ -23,9 +23,31 @@ done
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 run() { $SSH -o StrictHostKeyChecking=accept-new "$VM" "$@"; }
 
+say "Finding '$VM_NAME' in your Tailscale"
+if [ -z "${VM:-}" ]; then
+  VM="inbox@$VM_NAME"
+  # Ask the Tailscale app for the VM's address, so this works even if the Mac can't look up names.
+  STATUS=""
+  for TS in /Applications/Tailscale.app/Contents/MacOS/Tailscale "$(command -v tailscale || true)"; do
+    [ -n "$TS" ] && [ -x "$TS" ] || continue
+    STATUS="$("$TS" status --json 2>/dev/null || true)"
+    [ -n "$STATUS" ] && break
+  done
+  if IP="$(printf '%s' "$STATUS" | .venv/bin/python deploy/find_vm.py "$VM_NAME")"; then
+    VM="inbox@$IP"
+  elif [ $? = 1 ]; then
+    exit 1          # find_vm.py said what's wrong
+  fi                # else: couldn't ask the app; try the name
+fi
+echo "VM: $VM"
+
 say "Connecting to $VM over Tailscale"
 echo "(the first time, Tailscale may print a link to approve this login: open it)"
-run true || { echo "Can't reach $VM. Is the Tailscale app connected, and does 'inbox' show as online?"; exit 1; }
+run true || {
+  echo "Can't reach $VM. Check that the Tailscale app on this Mac is connected and that"
+  echo "'$VM_NAME' shows as online at https://login.tailscale.com/admin/machines"
+  exit 1
+}
 
 say "Copying the app"
 TARFLAGS=()
@@ -66,6 +88,12 @@ NAME="$(run "tailscale status --json" | .venv/bin/python -c 'import json,sys; pr
 
 say "Done"
 echo "Your dashboard:  https://$NAME/"
+if ! .venv/bin/python -c 'import socket,sys; socket.getaddrinfo(sys.argv[1], 443)' "$NAME" 2>/dev/null; then
+  echo
+  echo "! This Mac can't look up that address yet, so the link won't open here. Fix it once:"
+  echo "  1. https://login.tailscale.com/admin/dns : MagicDNS on, and HTTPS Certificates enabled"
+  echo "  2. Tailscale menu-bar icon > Settings: turn on 'Use Tailscale DNS settings'"
+fi
 echo "(on iPhone: open it in Safari, then Share > Add to Home Screen)"
 if [ "$SETTINGS" = 1 ] || [ "$DATA" = 1 ]; then
   echo

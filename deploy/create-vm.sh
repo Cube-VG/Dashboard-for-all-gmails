@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
-# Run in Google Cloud Shell (shell.cloud.google.com):   bash create-vm.sh tskey-auth-XXXX
+# 1. On your Mac:  bash deploy/create-vm.sh --copy    (puts a one-line command on the clipboard)
+# 2. In Google Cloud Shell (shell.cloud.google.com): paste it, press Enter, then run
+#                  bash create-vm.sh tskey-auth-XXXX
 # Creates the free e2-micro VM with exactly the free-tier settings and joins it to your
 # Tailscale, so your Mac can finish the setup with: bash deploy/push-to-vm.sh --all
+# Safe to run again: it picks up where it left off.
 set -euo pipefail
+
+if [ "${1:-}" = "--copy" ]; then
+  # The whole script as one line, so a paste can't half-arrive; it says how many lines it saved.
+  B64="$(gzip -9c "$0" | base64 | tr -d '\n')"
+  printf '%s' "echo '$B64' | base64 -d | gunzip > create-vm.sh && echo \"Saved create-vm.sh (\$(wc -l < create-vm.sh) lines). Now run:  bash create-vm.sh tskey-auth-...\"" | pbcopy
+  echo "Copied. In Cloud Shell: paste with Cmd+V and press Enter."
+  echo "It should answer: Saved create-vm.sh ($(wc -l < "$0" | tr -d ' ') lines)."
+  exit 0
+fi
 
 TSKEY="${1:-}"
 NAME="${VM_NAME:-inbox}"
@@ -49,9 +61,14 @@ else
   fi
 fi
 
-if gcloud compute instances describe "$NAME" --zone="$ZONE" >/dev/null 2>&1; then
-  say "VM '$NAME' already exists"
-else
+# The VM reports to its serial console: "INBOX-SETUP: joined" or "INBOX-SETUP: failed".
+reports() {
+  gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" 2>/dev/null |
+    grep -o 'INBOX-SETUP: [a-z]*' | sed 's/INBOX-SETUP: //' || true
+}
+STATE="$(gcloud compute instances describe "$NAME" --zone="$ZONE" --format='value(status)' 2>/dev/null || true)"
+BEFORE=0
+if [ -z "$STATE" ]; then
   say "Creating the free VM '$NAME' (e2-micro, $ZONE, 30 GB standard disk, Debian 12)"
   STARTUP="$(mktemp)"
   cat > "$STARTUP" <<'BOOT'
@@ -65,12 +82,16 @@ for _ in $(seq 10); do   # first boot: apt may be busy with automatic updates fo
   command -v tailscale >/dev/null && break
   curl -fsSL https://tailscale.com/install.sh | sh || sleep 30
 done
+for _ in $(seq 15); do   # after a reboot, give an already-joined Tailscale a moment to connect
+  tailscale status >/dev/null 2>&1 && break
+  sleep 2
+done
 if ! tailscale status >/dev/null 2>&1; then
-  KEY="$(curl -s -H 'Metadata-Flavor: Google' \
-    http://metadata.google.internal/computeMetadata/v1/instance/attributes/tailscale-authkey)"
+  KEY="$(curl -sf -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/attributes/tailscale-authkey || true)"
   [ -n "$KEY" ] && tailscale up --authkey="$KEY" --ssh --hostname=inbox
 fi
-tailscale status >/dev/null 2>&1 && echo "INBOX-SETUP: joined Tailscale"
+if tailscale status >/dev/null 2>&1; then echo "INBOX-SETUP: joined"; else echo "INBOX-SETUP: failed"; fi
 BOOT
   gcloud compute instances create "$NAME" --zone="$ZONE" \
     --machine-type=e2-micro \
@@ -80,30 +101,58 @@ BOOT
     --metadata-from-file=startup-script="$STARTUP" \
     --metadata=tailscale-authkey="$TSKEY"
   rm -f "$STARTUP"
-fi
-
-say "Waiting for the VM to join your Tailscale (1-3 minutes)"
-for _ in $(seq 60); do
-  if gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" 2>/dev/null |
-       grep -q "INBOX-SETUP: joined Tailscale"; then
-    JOINED=1; break
-  fi
-  sleep 5
-done
-# the key was single-use; remove it from the VM's settings anyway
-gcloud compute instances remove-metadata "$NAME" --zone="$ZONE" --keys=tailscale-authkey >/dev/null 2>&1 || true
-
-if [ "${JOINED:-0}" = 1 ]; then
-  say "Done: the VM is in your Tailscale as 'inbox'"
-  echo "One click in Tailscale so it never drops off: https://login.tailscale.com/admin/machines"
-  echo "  -> 'inbox' -> ... menu -> Disable key expiry"
-  echo
-  echo "Then, on your Mac, in the dashboard-for-all-gmails folder:"
-  echo
-  echo "    git pull && bash deploy/push-to-vm.sh --all"
+elif [ "$(reports | tail -1)" = joined ]; then
+  say "VM '$NAME' already exists and is in your Tailscale"
+  echo "(it joined the Tailscale account its key was made in; your Mac must be signed in to that one)"
+  BEFORE=-1
 else
-  echo "The VM didn't report joining Tailscale yet. Check the Machines page at"
-  echo "https://login.tailscale.com/admin/machines . If 'inbox' isn't there after a few minutes, run:"
-  echo "    gcloud compute instances get-serial-port-output $NAME --zone=$ZONE | tail -40"
-  exit 1
+  say "VM '$NAME' already exists but isn't in your Tailscale yet: giving it the new key"
+  BEFORE="$(reports | wc -l)"
+  gcloud compute instances add-metadata "$NAME" --zone="$ZONE" --metadata=tailscale-authkey="$TSKEY"
+  STARTED="$(gcloud compute instances describe "$NAME" --zone="$ZONE" --format='value(lastStartTimestamp)')"
+  AGE=$(( $(date +%s) - $(date -d "${STARTED:-now}" +%s 2>/dev/null || date +%s) ))
+  if [ "$STATE" != RUNNING ]; then
+    echo "It was $STATE: starting it"
+    gcloud compute instances start "$NAME" --zone="$ZONE"
+  elif [ "$(reports | tail -1)" = failed ] || [ "$AGE" -gt 900 ]; then
+    echo "Restarting it so it tries again with the new key"
+    gcloud compute instances reset "$NAME" --zone="$ZONE"
+  else
+    echo "It's still setting itself up (started $((AGE / 60)) min ago) and will use the new key"
+  fi
 fi
+
+if [ "$BEFORE" -ge 0 ]; then
+  say "Waiting for the VM to join your Tailscale (usually 2-5 minutes, at most 10)"
+  RESULT=""
+  for _ in $(seq 120); do
+    if [ "$(reports | wc -l)" -gt "$BEFORE" ]; then RESULT="$(reports | tail -1)"; break; fi
+    sleep 5
+  done
+  if [ "$RESULT" = joined ]; then
+    # the key was single-use; remove it from the VM's settings anyway
+    gcloud compute instances remove-metadata "$NAME" --zone="$ZONE" --keys=tailscale-authkey >/dev/null 2>&1 || true
+  elif [ "$RESULT" = failed ]; then
+    gcloud compute instances remove-metadata "$NAME" --zone="$ZONE" --keys=tailscale-authkey >/dev/null 2>&1 || true
+    echo "The VM couldn't join Tailscale. Its last messages:"
+    gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" 2>/dev/null |
+      grep -i 'startup-script' | tail -15 || true
+    echo
+    echo "Usually the key was already used or has expired. Make a new one at"
+    echo "https://login.tailscale.com/admin/settings/keys and run:  bash create-vm.sh tskey-auth-NEW-KEY"
+    exit 1
+  else
+    echo "No word from the VM after 10 minutes; it may still be installing."
+    echo "Wait 5 minutes and run the same command again (it picks up where it left off)."
+    echo "Details:  gcloud compute instances get-serial-port-output $NAME --zone=$ZONE | grep startup-script | tail -40"
+    exit 1
+  fi
+fi
+
+say "Done: the VM is in your Tailscale as '$NAME'"
+echo "One click in Tailscale so it never drops off: https://login.tailscale.com/admin/machines"
+echo "  -> '$NAME' -> ... menu -> Disable key expiry"
+echo
+echo "Then, on your Mac, in the dashboard-for-all-gmails folder:"
+echo
+echo "    git pull && bash deploy/push-to-vm.sh --all"

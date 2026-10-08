@@ -33,22 +33,24 @@ Free-tier terms change. Check [cloud.google.com/free](https://cloud.google.com/f
 1. Sign up at [console.cloud.google.com](https://console.cloud.google.com).
    - Google asks for a card to verify you. The free VM doesn't charge it.
    - Make sure a project is selected at the top (new accounts get "My First Project").
-2. On your **Mac**, copy the VM script to the clipboard:
+2. On your **Mac**, put the VM script on the clipboard as one line:
    ```
    cd ~/Documents/dashboard-for-all-gmails && git pull
-   pbcopy < deploy/create-vm.sh
+   bash deploy/create-vm.sh --copy
    ```
 3. Open **Cloud Shell** at [shell.cloud.google.com](https://shell.cloud.google.com). It's a free
    terminal in the browser.
-4. In Cloud Shell:
-   - type `cat > create-vm.sh` and press Enter
-   - paste with **Cmd+V**
-   - press **Ctrl+D**
+4. Click inside the Cloud Shell terminal, paste with **Cmd+V** and press **Enter**.
+   It must answer **`Saved create-vm.sh (… lines)`** with the number your Mac printed. If it doesn't,
+   the paste didn't arrive:
+   allow pasting if the browser asks, and try again.
 5. Run it with your Tailscale key:
    ```
    bash create-vm.sh tskey-auth-PASTE-YOUR-KEY
    ```
-   If Cloud Shell asks to **Authorize**, click it.
+   - If Cloud Shell asks to **Authorize**, click it.
+   - It takes 3–10 minutes and ends with **Done**. Running it again is safe; it carries on
+     from where it stopped.
 
 The script does all of this:
 
@@ -107,8 +109,11 @@ The app starts by itself when the VM boots and restarts itself if it ever crashe
 
 | Problem | Fix |
 |---|---|
+| `bash create-vm.sh …` prints nothing at all | The file is empty because the paste didn't arrive. Redo step 2, points 2–4 |
 | `create-vm.sh` says billing isn't on | Link a billing account to the project (the script prints the link), then run it again |
-| `push-to-vm.sh` can't reach `inbox@inbox` | Tailscale app connected? Is **inbox** online on the Machines page? If it shows as `inbox-1`, run `VM=inbox@inbox-1 bash deploy/push-to-vm.sh --all` |
+| `create-vm.sh` says "No word from the VM" or "couldn't join" | Run it again as it says; for "couldn't join", with a new key |
+| `push-to-vm.sh` says it doesn't have a machine called `inbox` | Step 2 didn't finish with **Done**, or this Mac is signed in to a different Tailscale account. The message lists what your Mac can see |
+| `push-to-vm.sh` says "This Mac can't look up that address" | In the Tailscale menu-bar app's settings, turn on **Use Tailscale DNS settings**; check MagicDNS is on at [admin/dns](https://login.tailscale.com/admin/dns) |
 | ssh says the tailnet policy doesn't permit it | In Tailscale's **Access controls**, keep the default `"ssh"` rule (members may SSH to their own devices) |
 | A mailbox shows ✗ after the push | Run `bash deploy/push-to-vm.sh --settings` again; for Gmail, check the App Password still exists |
 
