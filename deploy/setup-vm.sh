@@ -105,6 +105,7 @@ sudo systemctl restart inbox.service
 # (the first time, Tailscale may print a link to switch on HTTPS for your tailnet: open it)
 sudo tailscale serve --bg --https=443 http://127.0.0.1:8000
 
+[ "$FROM_MAC" = 1 ] && exit 0   # push-to-vm.sh carries on and prints its own summary
 say "Done"
 echo "Open this on your Mac or iPhone (with the Tailscale app signed in):"
 echo
