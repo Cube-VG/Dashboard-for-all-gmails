@@ -4,9 +4,9 @@
 <article class="detail q-{{ msg.quad or 'none' }}" data-message="{{ msg.id }}" data-account="{{ msg.account_email }}" data-imp="{{ msg.importance if msg.importance is not none else '' }}" data-urg="{{ msg.urgency if msg.urgency is not none else '' }}" data-cat="{{ msg.category or '' }}" data-read="{{ 1 if msg.is_read else 0 }}">
   <div class="detail-bar">
     {% if standalone %}
-    <a class="icon-btn back-btn" href="/" aria-label="Back to Inbox" title="Back to Inbox"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
+    <a class="icon-btn back-btn" href="/" aria-label="Back to Inbox" title="Back to Inbox"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></a>
     {% else %}
-    <a class="icon-btn close-btn" href="{{ close_url }}" data-close aria-label="Back to the list" title="Back to the list (u)" aria-keyshortcuts="u"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
+    <a class="icon-btn close-btn" href="{{ close_url }}" data-close aria-label="Back to the list" title="Back to the list (u)" aria-keyshortcuts="u"><svg class="ic" aria-hidden="true"><use href="#i-arrow-left"/></svg></a>
     {% endif %}
     <form class="read-form" method="post" action="/message/{{ msg.id }}/read" data-enhance>
       <input type="hidden" name="is_read" value="{{ 0 if msg.is_read else 1 }}">

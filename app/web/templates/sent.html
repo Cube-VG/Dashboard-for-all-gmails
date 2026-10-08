@@ -1,35 +1,46 @@
 {% extends "base.html" %}
 {% block title %}Sent{% endblock %}
 {% block content %}
-{% set STATUS = {"queued": "Sending…", "sending": "Sending…", "sent": "", "failed": "Not sent"} %}
+{% set STATUS = {"queued": "Sending…", "sending": "Sending…", "sent": "", "failed": "Not sent", "cancelled": "Undone"} %}
 <div class="page sent-page">
   <div class="page-head">
     <h1 class="title">Sent</h1>
     <a class="btn btn-primary" href="/compose?next=/sent" data-compose-new><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg><span>Compose</span></a>
   </div>
-  <p class="intro">Mail you wrote here, newest first. Your accounts' own Sent folders have everything else.</p>
+  <p class="intro">Mail you wrote here, newest first; open one to read it. Your accounts' own Sent folders have everything else.</p>
   {% if sent %}
   <ul class="sent-list">
     {% for s in sent %}
-    <li class="sent-item {{ s.status }}">
-      <span class="sent-who"><span class="sent-to">To: {{ s.who or "(no recipients)" }}</span><span class="sent-from muted">from {{ s.account_email }}</span></span>
-      <span class="sent-main"><b>{{ s.subject or "(no subject)" }}</b> <span class="muted">– {{ s.body|truncate(120) }}</span>
-        {% if s.status == "failed" %}<span class="sent-err">{{ s.error }}</span>{% elif s.note %}<span class="sent-note muted">{{ s.note }}</span>{% endif %}</span>
-      <span class="sent-end">
-        {% if STATUS[s.status] %}<span class="chip {{ 'due late' if s.status == 'failed' else '' }}">{{ STATUS[s.status] }}</span>{% endif %}
-        <time class="num" title="{{ s.when_full }}">{{ s.when }}</time>
-        {% if s.status == "failed" %}
-        <a class="btn btn-secondary sm" href="/compose?draft={{ s.id }}&amp;next=/sent" data-compose-draft="{{ s.id }}">Edit &amp; retry</a>
+    <li class="sent-item {{ s.status }}" id="s{{ s.id }}">
+      <details class="sent-open">
+        <summary class="sent-row">
+          <span class="sent-who"><span class="sent-to">To: {{ s.who or "(no recipients)" }}</span><span class="sent-from muted">from {{ s.account_email }}</span></span>
+          <span class="sent-main"><b>{{ s.subject or "(no subject)" }}</b> <span class="muted">– {{ s.body|truncate(120) }}</span>
+            {% if s.status == "failed" %}<span class="sent-err">{{ s.error }}</span>{% elif s.note %}<span class="sent-note muted">{{ s.note }}</span>{% endif %}</span>
+          <span class="sent-end">
+            {% if STATUS[s.status] %}<span class="chip{{ ' due late' if s.status == 'failed' else '' }}">{{ STATUS[s.status] }}</span>{% endif %}
+            <time class="num" title="{{ s.when_full }}">{{ s.when }}</time>
+          </span>
+        </summary>
+        <div class="sent-body">{{ s.full_text or s.body }}</div>
+      </details>
+      {% if s.status in ("queued", "failed", "cancelled") %}
+      <span class="sent-actions">
+        {% if s.status == "queued" %}
+        <form method="post" action="/outbox/{{ s.id }}/undo" data-enhance data-undo-send="{{ s.id }}"><button class="btn btn-secondary sm">Undo</button></form>
+        {% else %}
+        <a class="btn btn-secondary sm" href="/compose?draft={{ s.id }}&amp;next=/sent" data-compose-draft="{{ s.id }}">{{ "Edit & retry" if s.status == "failed" else "Edit" }}</a>
         <form method="post" action="/outbox/{{ s.id }}/discard" data-enhance><input type="hidden" name="next" value="/sent"><button class="btn btn-text sm">Discard</button></form>
         {% endif %}
       </span>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
   {% else %}
   <div class="empty-state">
     <span class="empty-ic"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></span>
-    <h1 class="title">Nothing sent yet</h1>
+    <h2 class="title">Nothing sent yet</h2>
     <p>Write a new email with <b>Compose</b>, or open an email and press <b>Reply</b>.</p>
   </div>
   {% endif %}

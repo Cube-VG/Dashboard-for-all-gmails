@@ -46,6 +46,24 @@ def _default_classify(conn):
     return classify_pending(conn)
 
 
+def _backfill_headers(conn, accounts) -> None:
+    """Once after upgrading: re-read Reply-To / Cc / References of mail synced before sending
+    existed, so Reply goes to the right person and Reply all keeps everyone."""
+    from datetime import timedelta
+
+    from app.sync.imap_sync import refresh_bodies
+
+    since = (datetime.now(timezone.utc) - timedelta(days=config.SYNC_DAYS_BACK + 1)).isoformat()
+    for account in accounts:
+        try:
+            refresh_bodies(conn, account, since)
+        except Exception as exc:  # noqa: BLE001 - best effort, once: never re-download every cycle
+            conn.rollback()
+            log.warning("%s: couldn't re-read reply headers: %s", account.email, exc)
+    db.backfill_done(conn)
+    log.info("Reply headers filled in for mail synced before the upgrade")
+
+
 def _stage(name: str, fn, errors: list[str], conn=None):
     """Run one step; on failure log it, note it in errors and return None."""
     try:
@@ -135,6 +153,8 @@ def _cycle(conn_factory, accounts, sync, classify, notify) -> dict:
                 accounts = _stage("accounts", config.load_accounts, errors)
             if accounts is not None:
                 result["sync"] = _stage("sync", lambda: sync(conn, accounts), errors, conn)
+                if db.backfill_pending(conn) and sync is _default_sync:
+                    _stage("reply headers", lambda: _backfill_headers(conn, accounts), errors, conn)
             result["classify"] = _stage("classify", lambda: classify(conn), errors, conn)
             result["notified"] = _stage("notify", lambda: notify_new(conn, notify), errors, conn) or 0
         finally:

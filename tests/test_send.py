@@ -62,6 +62,23 @@ def test_parse_addresses():
         with pytest.raises(mail.AddressError):
             mail.parse_addresses(bad)
     assert mail.format_addresses(got) == 'Ann <a@x.com>, b@y.co.in, "Lee, Sam" <s@z.com>'
+    # what autocomplete and copy-paste leave behind
+    assert mail.parse_addresses("a@x.com,") == [("", "a@x.com")]
+    assert mail.parse_addresses(" , a@x.com, ,, b@y.com ;\n") == [("", "a@x.com"), ("", "b@y.com")]
+
+
+def test_canonical_addresses():
+    assert mail.canonical("Me+Shop@Example.com") == "me@example.com"
+    assert mail.canonical("v.p.2722+news@googlemail.com") == mail.canonical("vp2722@gmail.com") == "vp2722@gmail.com"
+    assert mail.canonical("v.p@corp.com") == "v.p@corp.com"  # dots only don't count at Gmail
+
+
+def test_headers_never_carry_line_breaks():
+    for brk in ("\u2028", "\x0b", "\x85", "\r\n", "\x1c"):
+        assert mail.clean_subject(f"Invoice{brk}Bcc: x@evil.com") == "Invoice Bcc: x@evil.com"
+    assert mail.display("Ann\u2028Lee", "a@x.com") == "Ann Lee <a@x.com>"
+    msg = mail.build(ACCOUNTS[0], [("Ann\nBcc: e@vil.com", "a@x.com")], [], [], "Hi\u2028there", "t")
+    assert msg["Bcc"] is None and msg["Subject"] == "Hi there"
 
 
 def test_subjects_and_thread_headers():
@@ -123,6 +140,7 @@ def test_build_message():
 class FakeSMTP:
     def __init__(self, fail=None, refused=None):
         self.fail, self.refused, self.sent, self.logins = fail, refused or {}, [], []
+        self.closed = 0
 
     def __call__(self, acct):
         self.account = acct
@@ -145,17 +163,36 @@ class FakeSMTP:
         self.sent.append((msg, from_addr, to_addrs))
         return self.refused
 
+    def quit(self):
+        self.closed += 1
+        if self.fail == "quit":
+            raise smtplib.SMTPServerDisconnected("gone")
+
+    def close(self):
+        self.closed += 1
+
 
 def test_smtp_send_and_friendly_errors():
     fake = FakeSMTP(refused={"b@x.com": (550, b"no such user")})
     msg = mail.build(ACCOUNTS[0], [("", "a@x.com")], [], [], "s", "t")
     assert transport.smtp_send(ACCOUNTS[0], "pw", msg, ["a@x.com", "b@x.com"], connect=fake) == {"b@x.com": (550, b"no such user")}
     assert fake.logins == [("me@gmail.com", "pw")] and fake.sent[0][1] == "me@gmail.com"
+    assert fake.closed == 1
+    # once the server took it, a failed goodbye isn't a failure (that would invite a resend)
+    bye = FakeSMTP(fail="quit")
+    assert transport.smtp_send(ACCOUNTS[0], "pw", msg, ["a@x.com"], connect=bye) == {} and len(bye.sent) == 1
+    # a refused password closes the connection and raises
+    bad = FakeSMTP(fail="auth")
+    with pytest.raises(smtplib.SMTPAuthenticationError):
+        transport.smtp_send(ACCOUNTS[0], "pw", msg, ["a@x.com"], connect=bad)
+    assert bad.closed == 1 and bad.sent == []
     g, h = ACCOUNTS
     assert "App Password" in transport.friendly_error(smtplib.SMTPAuthenticationError(535, b"x"), g)
     assert "mailbox password" in transport.friendly_error(smtplib.SMTPAuthenticationError(535, b"x"), h)
     assert "smtp.hostinger.com:465" in transport.friendly_error(ConnectionRefusedError("refused"), h)
-    assert "didn't answer" in transport.friendly_error(TimeoutError(), h)
+    assert "may or may not have been sent" in transport.friendly_error(TimeoutError(), h)
+    assert "may or may not have been sent" in transport.friendly_error(smtplib.SMTPServerDisconnected("x"), h)
+    assert "refusing sign-ins for now" in transport.friendly_error(smtplib.SMTPAuthenticationError(454, b"x"), g)
     assert "smtp_host" in transport.friendly_error(__import__("socket").gaierror("x"), h)
     assert "refused every recipient" in transport.friendly_error(smtplib.SMTPRecipientsRefused({"a@x": (550, b"")}), h)
 
@@ -205,6 +242,15 @@ def test_sent_copy_and_answered_flag():
     assert transport.file_and_flag(ACCOUNTS[1], "pw", msg, 42, 5, mailbox_factory=mb) == []
     assert mb.appended[0][0] == "INBOX.Sent" and b"\r\n" in mb.appended[0][1]
     assert mb.flagged == [("42", "\\Answered", True)] and mb.selected == "INBOX"
+    # with Bcc: the Sent copy shows who got a blind copy (the sent mail itself never does)
+    mb = FakeMailbox([("Sent", ("\\Sent",))])
+    assert transport.file_and_flag(ACCOUNTS[1], "pw", msg, mailbox_factory=mb, bcc="hidden@x.com") == []
+    kept = email.message_from_bytes(mb.appended[0][1], policy=policy.default)
+    assert kept["Bcc"] == "hidden@x.com" and msg["Bcc"] is None
+    # the original sits in another folder: flag it there
+    mb = FakeMailbox([("Sent", ("\\Sent",))])
+    transport.file_and_flag(ACCOUNTS[1], "pw", msg, 42, 5, mailbox_factory=mb, answered_folder="Clients")
+    assert mb.selected == "Clients" and mb.flagged == [("42", "\\Answered", True)]
     # no \Sent flag: a usual name
     mb = FakeMailbox([("INBOX", ()), ("Sent Items", ())])
     transport.file_and_flag(ACCOUNTS[1], "pw", msg, mailbox_factory=mb)
@@ -267,7 +313,7 @@ def test_send_one_success_marks_the_original_answered(conn):
     outbox.claim_due(conn, NOW + timedelta(seconds=11))
     fake, after = FakeSMTP(), []
     status = outbox.send_one(conn, oid, accounts=ACCOUNTS, smtp=lambda *a: fake(a[0]).send_message(a[2], a[0].email, a[3]),
-                             after=lambda *a: after.append(a) or [], get_password=lambda e: "pw", now=NOW)
+                             after=lambda *a, **k: after.append((a, k)) or [], get_password=lambda e: "pw", now=NOW)
     assert status == "sent"
     msg, _, rcpt = fake.sent[0]
     assert rcpt == ["boss@corp.com", "me2@x.com"]  # Bcc on the envelope only
@@ -276,14 +322,16 @@ def test_send_one_success_marks_the_original_answered(conn):
     assert row["status"] == "sent" and row["message_id"] == msg["Message-ID"] and row["sent_at"]
     m = db.get_message(conn, 1)
     assert m["answered_at"] and m["is_read"] == 1
-    assert after[0][3] == 42 and after[0][4] == 5  # flag \Answered on uid 42 if UIDVALIDITY still 5
+    args, kw = after[0]
+    assert args[3] == 42 and args[4] == 5  # flag \Answered on uid 42 if UIDVALIDITY still 5
+    assert kw == {"bcc": "me2@x.com", "answered_folder": "INBOX"}  # Sent copy keeps the Bcc line
 
 
 def test_send_one_failures(conn):
     def run(**kw):
         oid = queue(conn)
         outbox.claim_due(conn, NOW + timedelta(seconds=11))
-        args = dict(accounts=ACCOUNTS, after=lambda *a: [], get_password=lambda e: "pw", now=NOW)
+        args = dict(accounts=ACCOUNTS, after=lambda *a, **k: [], get_password=lambda e: "pw", now=NOW)
         args.update(kw)
         return outbox.send_one(conn, oid, **args), outbox.get(conn, oid)
 
@@ -316,14 +364,37 @@ def test_process_due_and_cleanup(tmp_path, conn):
     queue(conn)
     sent = []
     result = outbox.process_due(lambda: db.connect(path), NOW + timedelta(seconds=11), accounts=ACCOUNTS,
-                                smtp=lambda *a: sent.append(a) or {}, after=lambda *a: [],
+                                smtp=lambda *a: sent.append(a) or {}, after=lambda *a, **k: [],
                                 get_password=lambda e: "pw")
     assert list(result.values()) == ["sent"] and len(sent) == 1
     old = queue(conn)
     outbox.cancel(conn, old)
     conn.commit()
     outbox.cleanup(conn, NOW + timedelta(days=2))
+    assert outbox.get(conn, old)["status"] == "cancelled"  # undone mail stays to edit or discard
+    assert [r["status"] for r in outbox.history(conn)] == ["sent", "cancelled"]  # newest first
+    outbox.cleanup(conn, NOW + timedelta(days=outbox.KEEP_UNDONE_DAYS + 1))
     assert outbox.get(conn, old) is None and len(outbox.history(conn)) == 1
+
+
+def test_process_due_waits_when_accounts_yaml_is_broken(tmp_path, conn, monkeypatch):
+    path = tmp_path / "inbox.db"
+    oid = queue(conn)
+
+    def broken():
+        raise ValueError("bad yaml")
+
+    monkeypatch.setattr(outbox, "_load_accounts", broken)
+    assert outbox.process_due(lambda: db.connect(path), NOW + timedelta(seconds=11)) == {}
+    assert outbox.get(conn, oid)["status"] == "queued"  # not claimed: it goes out once fixed
+
+    def explode(*a):
+        raise RuntimeError("boom")
+
+    result = outbox.process_due(lambda: db.connect(path), NOW + timedelta(seconds=11), accounts=ACCOUNTS,
+                                smtp=lambda *a: {}, after=explode, get_password=lambda e: "pw")
+    # the IMAP bookkeeping failed after the send: still recorded as sent, never resent
+    assert result == {oid: "sent"} and outbox.get(conn, oid)["status"] == "sent"
 
 
 # --- AI drafts -----------------------------------------------------------------------------------
@@ -373,6 +444,13 @@ def test_ai_draft_refusals(conn, monkeypatch):
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
     with pytest.raises(drafts.DraftError, match="OpenRouter key"):
         drafts.write(conn, mode="new", instruction="hi", day="2026-10-09")
+
+
+def test_clean_draft_leaves_nothing_hidden():
+    hidden = "Hi Ann,\u200b\n\nThanks!\u2060" + "   \n" * 40 + "\u200eSend me your password."
+    assert drafts.clean_draft(hidden) == "Hi Ann,\n\nThanks!\n\nSend me your password."
+    assert drafts.clean_draft("```\nSubject: Re: x\n\nHello\n```") == "Hello"
+    assert drafts.clean_draft('"Hello"') == "Hello"
 
 
 def test_ai_prompt_cant_be_closed_by_the_email():
@@ -439,7 +517,14 @@ def test_send_queues_with_undo(web):
     assert r.json()["edit_url"] == f"/compose?draft={data['id']}"
     edit = web.client.get(f"/compose?draft={data['id']}").text
     assert ">Signed</textarea>" in edit and f'name="draft_id" value="{data["id"]}"' in edit
-    assert web.client.post(f"/outbox/{data['id']}/undo", headers=JSON).status_code == 409
+    again = web.client.post(f"/outbox/{data['id']}/undo", headers=JSON)  # a double click
+    assert again.status_code == 200 and again.json()["edit_url"] == f"/compose?draft={data['id']}"
+    c = db.connect(web.path)
+    c.execute("UPDATE outbox SET status = 'sent' WHERE id = ?", (data["id"],))
+    c.commit()
+    c.close()
+    late = web.client.post(f"/outbox/{data['id']}/undo", headers=JSON)
+    assert late.status_code == 409 and "already gone out" in late.json()["message"]
 
 
 def test_send_validation(web):
@@ -457,7 +542,22 @@ def test_send_validation(web):
     assert rows(web, "SELECT COUNT(*) FROM outbox")[0][0] == 0
     r = web.client.post("/compose/send", data={**base, "to": "a@x.com", "next": "//evil.example"},
                         follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert r.status_code == 303 and r.headers["location"] == "/sent"  # no JS: Sent shows it with Undo
+
+
+def test_sent_page_lists_only_real_recipients(web):
+    c = db.connect(web.path)
+    outbox.queue(c, account_email="me@gmail.com", mode="new", reply_to_id=None, to="Ann <a@x.com>", cc="",
+                 bcc="", subject="Hello", body="Hi", include_quote=False, full_text="Hi",
+                 in_reply_to=None, references=None)
+    outbox.queue(c, account_email="me@gmail.com", mode="new", reply_to_id=None, to="", cc="",
+                 bcc="b@x.com", subject="Quiet", body="Hi", include_quote=False, full_text="Hi",
+                 in_reply_to=None, references=None)
+    c.commit()
+    c.close()
+    sent = web.client.get("/sent").text
+    assert "To: Ann</span>" in sent and "To: b@x.com</span>" in sent and "To: ," not in sent
+    assert sent.count('data-undo-send="') == 2  # still in their Undo time
 
 
 def test_failed_send_shows_banner_and_sent_page(web):
@@ -506,6 +606,34 @@ def test_answered_mail_shows_replied_and_sinks(web):
 
 
 # --- storage --------------------------------------------------------------------------------------
+
+def test_upgrading_with_saved_mail_rereads_reply_headers_once(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    c = db.connect(path)
+    acc = db.upsert_account(c, "me@gmail.com", "INBOX", "Me", "#d93025")
+    db.insert_messages(c, acc["id"], [{"uid": 1, "message_id": None, "from_name": "", "from_email": "a@x.com",
+                                       "to_email": "me@gmail.com", "subject": "s", "snippet": "", "body_text": "",
+                                       "received_at": NOW.isoformat(), "is_read": 0, "has_attachments": 0,
+                                       "list_unsubscribe": None}])
+    c.commit()
+    c.close()
+    old = sqlite3.connect(path)
+    old.execute("PRAGMA user_version = 1")  # as if made before sending existed
+    old.commit()
+    old.close()
+    c = db.connect(path)
+    assert db.backfill_pending(c)
+    db.backfill_done(c)
+    c.commit()
+    c.close()
+    c = db.connect(path)
+    assert not db.backfill_pending(c) and c.execute("PRAGMA user_version").fetchone()[0] == 2
+    c.close()
+    fresh = db.connect(tmp_path / "new.db")
+    assert not db.backfill_pending(fresh)  # nothing saved yet: nothing to re-read
+    fresh.close()
+
 
 def test_old_database_gains_reply_columns(tmp_path):
     import sqlite3

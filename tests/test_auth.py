@@ -62,6 +62,11 @@ def test_everything_needs_login(site):
     assert client.post("/sync", headers={"Accept": "application/json"}).status_code == 401
     assert client.get("/message/1?partial=1").status_code == 401
     assert client.get("/rules").status_code == 303
+    # writing and sending mail too
+    for path in ("/compose/send", "/compose/draft", "/outbox/1/undo", "/outbox/1/discard"):
+        assert client.post(path, headers={"Accept": "application/json"}).status_code == 401, path
+    assert client.get("/api/outbox/1", headers={"Accept": "application/json"}).status_code == 401
+    assert client.get("/compose").status_code == 303 and client.get("/sent").status_code == 303
     assert client.get("/static/style.css").status_code == 200       # the login page needs its CSS
     page = client.get("/login")
     assert page.status_code == 200 and 'name="password"' in page.text and 'name="code"' in page.text

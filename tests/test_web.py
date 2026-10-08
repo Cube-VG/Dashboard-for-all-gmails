@@ -89,8 +89,8 @@ def test_inbox_tabs_like_gmail(env):
     assert columns(r.text) == {"do": [i["Contract needs signature"], i["Server down!"]]}  # Do now tab
     assert 'class="tab q-do" href="/" aria-current="page"' in r.text
     assert 'href="/?tab=schedule"' in r.text and 'href="/?tab=unsorted"' in r.text
-    assert '<span class="tab-new num">1 new</span>' in r.text  # unread in Do now
-    assert "2 waiting" in r.text  # the Not sorted tab
+    assert '<span class="tab-new num" data-new>1<span class="tab-word"> new</span></span>' in r.text  # unread in Do now
+    assert '>2<span class="tab-word"> waiting</span>' in r.text  # the Not sorted tab
     r = env.client.get("/", params={"tab": "schedule"})
     assert columns(r.text) == {"schedule": [i["Budget review"], i["Quarterly planning"]]}
     r = env.client.get("/", params={"tab": "unsorted"})
@@ -147,6 +147,17 @@ def test_filters(env):
     assert listed(env, q="mallory") == [i["<script>alert(1)</script>"]]  # from_name
     assert listed(env, q="hello there") != []  # snippet
     assert listed(env, q="%") == []  # LIKE wildcards are escaped
+    assert listed(env, q="onerror") == [i["<script>alert(1)</script>"]]  # the email's text too
+
+
+def test_search_from_the_inbox_shows_all_matching_mail(env):
+    i = env.ids
+    page = env.client.get("/").text
+    assert '<input type="hidden" name="view" value="all">' in page  # not just the open tab
+    matrix = env.client.get("/", params={"view": "matrix"}).text
+    assert '<input type="hidden" name="view" value="matrix">' in matrix  # the matrix keeps its view
+    r = env.client.get("/", params={"view": "all", "q": "corp"})
+    assert set(columns(r.text)["list"]) == {i["Contract needs signature"], i["Quarterly planning"], i["Budget review"]}
     unread = listed(env, unread="1")
     assert i["Server down!"] not in unread and i["Weekly newsletter"] not in unread
     assert len(unread) == 6

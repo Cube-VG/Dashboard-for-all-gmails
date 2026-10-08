@@ -268,3 +268,39 @@ def test_refresh_bodies_reports_progress(conn):
     imap_sync.refresh_bodies(conn, ACCOUNT, "2000-01-01", mailbox_factory=lambda h, p: FakeMailBox(server),
                              progress=lambda done, total: seen.append((done, total)))
     assert seen == [(50, 120), (100, 120), (120, 120)]
+
+
+def test_reply_headers_are_saved_readable_even_with_odd_addresses(conn):
+    raw = ("From: Alice <alice@example.com>\r\nTo: me@example.com\r\n"
+           "Cc: =?utf-8?q?Jos=C3=A9?= <jose@example.com>, \"Lee, Sam\" <sam@x.com>, "
+           "Ünï <ünï@exämple.com>, Nobody <not-an-address>\r\n"
+           "Reply-To: =?utf-8?q?Caf=C3=A9_Help?= <help@cafe.fr>\r\n"
+           "References: <a@x>\r\n <b@x>\r\n"
+           "Subject: Hi\r\nDate: Tue, 06 Oct 2026 09:30:00 +0530\r\nMessage-ID: <hi@example.com>\r\n"
+           "Content-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n").encode()
+    server = FakeServer()
+    server.messages[1] = FakeMessage(1, raw)
+    assert run(conn, server) == 1  # a non-ASCII address never stops the sync
+    m = conn.execute("SELECT cc_email, reply_to, references_hdr FROM messages").fetchone()
+    assert m["cc_email"].startswith('José <jose@example.com>, "Lee, Sam" <sam@x.com>')
+    assert "not-an-address" not in m["cc_email"] and "=?utf-8?" not in m["cc_email"]
+    assert m["reply_to"] == "Café Help <help@cafe.fr>"
+    assert m["references_hdr"] == "<a@x> <b@x>"
+
+
+def test_an_email_that_cant_be_read_is_skipped_once_not_forever(conn, monkeypatch):
+    server = FakeServer()
+    for uid, subject in ((1, "Good"), (2, "Broken"), (3, "Also good")):
+        server.add(uid, subject=subject)
+    real = imap_sync.parse_message
+
+    def parse(msg):
+        if msg.uid == "3":  # the newest one: the sync must still move past it
+            raise ValueError("odd header")
+        return real(msg)
+
+    monkeypatch.setattr(imap_sync, "parse_message", parse)
+    assert run(conn, server) == 2
+    assert sorted(m["subject"] for m in db.recent_messages(conn, 10)) == ["Broken", "Good"]
+    server.fetched.clear()
+    assert run(conn, server) == 0 and server.fetched == []  # not fetched (and failed) every cycle

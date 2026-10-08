@@ -1,6 +1,6 @@
 {% macro card(m, show_quad=False) %}
 {% set why = ("Why: " ~ (m.reason or ("You moved it here." if m.scored_by == "user" else "No reason given.")) ~ " · scored by " ~ m.scored_by_label) if m.scored_by else "" %}
-<article class="card{% if not m.is_read %} unread{% endif %}{% if m.id == open_id %} active{% endif %}" data-id="{{ m.id }}" data-imp="{{ m.importance if m.importance is not none else '' }}" data-urg="{{ m.urgency if m.urgency is not none else '' }}" data-cat="{{ m.category or '' }}" data-read="{{ 1 if m.is_read else 0 }}">
+<article class="card{% if not m.is_read %} unread{% endif %}{% if m.id == open_id %} active{% endif %}" data-id="{{ m.id }}" data-account="{{ m.account_email }}" data-imp="{{ m.importance if m.importance is not none else '' }}" data-urg="{{ m.urgency if m.urgency is not none else '' }}" data-cat="{{ m.category or '' }}" data-read="{{ 1 if m.is_read else 0 }}">
   <a class="card-link" href="{{ f.url(open=m.id) }}" data-open="{{ m.id }}">
     <span class="sender">{% if not m.is_read %}<span class="sr-only">Unread: </span>{% endif %}{{ m.sender }}</span>
     <span class="subject"{% if why and not (m.summary or m.snippet) %} title="{{ why }}"{% endif %}>{{ m.subject or "(no subject)" }}</span>

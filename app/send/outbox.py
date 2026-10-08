@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 UNDO_SECONDS = 10
 STUCK_MINUTES = 5
 KEEP_SENT_DAYS = 90
+KEEP_UNDONE_DAYS = 14  # an undone email stays on the Sent page (to edit or discard) this long
 WORKER_INTERVAL = 2.0
 
 
@@ -69,10 +70,11 @@ def failed(conn, limit: int = 5):
 
 
 def history(conn, limit: int = 200):
-    """Mail written here, newest first (the Sent page)."""
+    """Mail written here, newest first (the Sent page), undone ones included so they can be
+    edited or discarded."""
     return conn.execute(
-        "SELECT * FROM outbox WHERE status != 'cancelled' ORDER BY COALESCE(sent_at, created_at) DESC, "
-        "id DESC LIMIT ?", (limit,)).fetchall()
+        "SELECT * FROM outbox ORDER BY COALESCE(sent_at, created_at) DESC, id DESC LIMIT ?",
+        (limit,)).fetchall()
 
 
 def _fail(conn, outbox_id: int, error: str) -> None:
@@ -95,7 +97,7 @@ def recover_stuck(conn, now: datetime | None = None) -> int:
 def cleanup(conn, now: datetime | None = None) -> None:
     now = now or _now()
     conn.execute("DELETE FROM outbox WHERE status = 'cancelled' AND created_at < ?",
-                 (_iso(now - timedelta(days=1)),))
+                 (_iso(now - timedelta(days=KEEP_UNDONE_DAYS)),))
     conn.execute("DELETE FROM outbox WHERE status = 'sent' AND sent_at < ?",
                  (_iso(now - timedelta(days=KEEP_SENT_DAYS)),))
     conn.commit()
@@ -121,6 +123,7 @@ def account_for(email: str, accounts) -> config.Account | None:
 
 
 def _load_accounts() -> list[config.Account]:
+    """accounts.yaml; raises (any error) when it can't be read, so nothing gets claimed."""
     try:
         return config.load_accounts(config.ACCOUNTS_FILE)
     except SystemExit:
@@ -168,14 +171,15 @@ def send_one(conn, outbox_id: int, *, accounts=None, smtp=transport.smtp_send,
             db.set_read(conn, original["id"], True)
     conn.commit()  # recorded as sent before the IMAP bookkeeping: a crash there never resends
 
-    uidvalidity = None
+    uidvalidity, folder = None, None
     if answered:
-        acc = conn.execute("SELECT uidvalidity, email FROM accounts WHERE id = ?",
+        acc = conn.execute("SELECT uidvalidity, email, folder FROM accounts WHERE id = ?",
                            (original["account_id"],)).fetchone()
-        uidvalidity = acc["uidvalidity"] if acc else None
+        uidvalidity, folder = (acc["uidvalidity"], acc["folder"]) if acc else (None, None)
         if acc is None or acc["email"].lower() != account.email.lower():
             answered = False  # sent from another address: leave that mailbox alone
-    notes = after(account, password, msg, original["uid"] if answered else None, uidvalidity)
+    notes = after(account, password, msg, original["uid"] if answered else None, uidvalidity,
+                  bcc=row["bcc_addrs"], answered_folder=folder)
     if notes:
         conn.execute("UPDATE outbox SET note = ? WHERE id = ?",
                      ("; ".join(filter(None, [note, *notes]))[:500], outbox_id))
@@ -185,10 +189,31 @@ def send_one(conn, outbox_id: int, *, accounts=None, smtp=transport.smtp_send,
 
 
 def process_due(conn_factory=db.connect, now: datetime | None = None, **kw) -> dict[int, str]:
-    """One worker pass: give up on stuck sends, then send everything whose Undo time is over."""
+    """One worker pass: give up on stuck sends, then send everything whose Undo time is over.
+    If accounts.yaml can't be read, nothing is claimed: the mail waits until it's fixed."""
     with closing(conn_factory()) as conn:
         recover_stuck(conn, now)
-        return {i: send_one(conn, i, now=now, **kw) for i in claim_due(conn, now)}
+        if not conn.execute("SELECT 1 FROM outbox WHERE status = 'queued' AND send_after <= ? LIMIT 1",
+                            (_iso(now or _now()),)).fetchone():
+            return {}
+        if "accounts" not in kw:
+            try:
+                kw["accounts"] = _load_accounts()
+            except Exception as exc:  # noqa: BLE001 - e.g. a typo in accounts.yaml
+                log.error("outbox: can't read accounts.yaml, mail waits: %s", exc)
+                return {}
+        results = {}
+        for i in claim_due(conn, now):
+            try:
+                results[i] = send_one(conn, i, now=now, **kw)
+            except Exception as exc:  # noqa: BLE001 - one bad row never strands the others
+                log.exception("outbox %s", i)
+                conn.rollback()
+                row = get(conn, i)
+                if row is not None and row["status"] == "sending":
+                    _fail(conn, i, f"Something went wrong while sending: {exc}"[:300])
+                results[i] = "sent" if row is not None and row["status"] == "sent" else "failed"
+        return results
 
 
 def start_worker(conn_factory=db.connect, interval: float = WORKER_INTERVAL) -> threading.Event:

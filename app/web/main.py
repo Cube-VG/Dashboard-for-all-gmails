@@ -60,7 +60,7 @@ RULE_KINDS = {
     "private": "Private — never send to AI",
 }
 SCORED_BY = {"rule": "a rule", "gemma": "Gemma", "user": "you"}
-SEARCH_FIELDS = ("subject", "from_email", "from_name", "snippet")
+SEARCH_FIELDS = ("subject", "from_email", "from_name", "snippet", "body_text")
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver", *config.ALLOWED_HOSTS]
 FLASH_COOKIE = "flash"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
@@ -660,6 +660,7 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             conn.commit()
         resp = RedirectResponse("/login" if login_on else "/", status_code=303)
         resp.delete_cookie(auth.COOKIE, path="/")
+        resp.headers["Clear-Site-Data"] = '"storage"'  # unsent drafts saved in this browser
         return resp
 
     @app.get("/")
@@ -811,6 +812,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             return list((accounts_loader or (lambda: config.load_accounts(config.ACCOUNTS_FILE)))())
         except SystemExit:  # no accounts.yaml
             return []
+        except Exception as exc:  # noqa: BLE001 - a typo in accounts.yaml
+            log.error("accounts.yaml can't be read: %s", exc)
+            return []
 
     def compose_ctx(conn, *, mode: str = "new", reply_id: int | None = None, from_email: str = "",
                     draft=None, values: dict | None = None, error: str = "", nxt: str = "/",
@@ -848,7 +852,8 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             "v": v, "quote": quote, "send_accounts": accounts, "from_email": from_email,
             "draft_id": draft["id"] if draft is not None else None, "compose_error": error,
             "compose_next": nxt, "variant": variant, "undo_seconds": outbox.UNDO_SECONDS,
-            "draft_key": f"draft:{mode}:{original['id'] if original is not None else 'new'}",
+            "draft_key": f"draft:{mode}:" + ((original["message_id"] or str(original["id"]))
+                                             if original is not None else "new"),
         }
 
     def compose_page(request: Request, conn, cctx: dict, status: int = 200):
@@ -916,6 +921,10 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             return fail(f"At most {mail.MAX_RECIPIENTS} recipients per email.", "to")
         if len(values["body"]) > mail.MAX_BODY_CHARS:
             return fail("The message is too long.", "body")
+        try:
+            mail.build(account, groups["to"], groups["cc"], groups["bcc"], values["subject"], "")
+        except ValueError as exc:
+            return fail(f"This email can't be sent as it is: {exc}")
         with connect() as conn:
             original = db.get_message(conn, reply_id) if reply_id and mode != "new" else None
             if mode != "new" and original is None:
@@ -933,7 +942,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             if _int(form.get("draft_id")):
                 outbox.discard(conn, _int(form.get("draft_id")))
             conn.commit()
-        return _reply(request, f"Sending in {outbox.UNDO_SECONDS} seconds…", nxt, id=oid,
+        return _reply(request, f"Sending in {outbox.UNDO_SECONDS} seconds… (Undo is here on Sent)"
+                      if not _wants_json(request) else f"Sending in {outbox.UNDO_SECONDS} seconds…",
+                      nxt if _wants_json(request) else "/sent", id=oid,
                       undo_seconds=outbox.UNDO_SECONDS, next=nxt)
 
     @app.post("/compose/draft")
@@ -975,7 +986,7 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             row = outbox.get(conn, outbox_id)
         if row is None:
             raise HTTPException(404, "That email isn't in the outbox")
-        if not stopped:
+        if not stopped and row["status"] != "cancelled":  # undoing twice is still just undone
             return _reply(request, "Too late to undo: it has already gone out." if row["status"] in
                           ("sending", "sent") else "It wasn't waiting to be sent.", "/sent",
                           ok=False, status=409, status_text=row["status"])
@@ -1006,8 +1017,8 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             for r in outbox.history(conn):
                 item = dict(r)
                 item["when"], item["when_full"] = _when(r["sent_at"] or r["created_at"])
-                item["who"] = ", ".join(n or a for n, a in getaddresses(
-                    [r["to_addrs"], r["cc_addrs"], r["bcc_addrs"]]) if a)[:200]
+                fields = [v for v in (r["to_addrs"], r["cc_addrs"], r["bcc_addrs"]) if v]
+                item["who"] = ", ".join(n or a for n, a in getaddresses(fields) if a)[:200]
                 rows.append(item)
             ctx = _page(request, conn, Filters(), page="sent", sent=rows)
         return render(request, "sent.html", ctx)

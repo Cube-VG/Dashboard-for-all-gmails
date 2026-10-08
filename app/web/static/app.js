@@ -170,10 +170,11 @@
     p._t0 = Date.now();
     p._timer = setTimeout(() => dismiss(p), ms);
   }
-  function toast(text, { kind = "ok", actions = [], timeout } = {}) {
+  function toast(text, { kind = "ok", actions = [], timeout, keep = false } = {}) {
     const box = $("#flash");
     if (!box) return null;
-    $$(".flash", box).forEach((old) => { if (!old.classList.contains("leaving")) dismiss(old); });
+    // a "Sending… Undo" snackbar stays until its time is up: other notes show next to it
+    $$(".flash", box).forEach((old) => { if (!old.classList.contains("leaving") && !old.dataset.keep) dismiss(old); });
     const p = document.createElement("p");
     p.className = "flash " + kind;
     p.setAttribute("role", kind === "err" ? "alert" : "status");
@@ -192,8 +193,8 @@
       b.className = "flash-btn";
       if (a.label === "Undo") b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>';
       b.append(a.label);
-      if (a.label === "Undo") b.title = "Undo (z)";
-      b.addEventListener("click", () => { dismiss(p); a.run(); });
+      if (a.label === "Undo" && a.key !== false) b.title = "Undo (z)";
+      b.addEventListener("click", () => { if (p.classList.contains("leaving")) return; dismiss(p); a.run(); });
       p.append(b);
     }
     if (kind === "err") {
@@ -205,6 +206,7 @@
       x.addEventListener("click", () => dismiss(p));
       p.append(x);
     }
+    if (keep) p.dataset.keep = "1";
     box.append(p);
     const ms = timeout ?? (kind === "err" ? 0 : actions.length ? 8000 : 6000);
     if (ms) arm(p, ms);
@@ -267,7 +269,7 @@
     return body;
   }
 
-  // --- refresh: re-render #filterbar and #content in place, keep reading position ---------
+  // --- refresh: re-render #sidebar and #content in place, keep reading position ----------
   const lastHTML = {};
   let refreshChain = Promise.resolve();
   function refresh(opts = {}) {
@@ -278,6 +280,7 @@
     const a = document.activeElement;
     const card = a && a.closest ? a.closest(".card") : null;
     return {
+      typing: !!(a && a.closest?.("form[data-compose]")),
       paneTop: $("#pane")?.scrollTop ?? 0,
       focusCard: card ? card.dataset.id : null,
       focusId: !card && a && a.id && a !== document.body ? a.id : null,
@@ -294,7 +297,8 @@
     }
     const pane = $("#pane");
     if (pane) pane.scrollTop = s.paneTop;
-    if (focusSubject || s.focusInPane) {
+    if (s.typing) return; // a reply being written keeps its focus (restored in doRefresh)
+    if (focusSubject || (s.focusInPane && (!document.activeElement || document.activeElement === document.body))) {
       const subj = $("#pane .detail-subject") || $(".detail-subject");
       if (subj) { subj.focus({ preventScroll: true }); return; }
     }
@@ -328,9 +332,19 @@
       // a reply being written in the pane survives the re-render (same email still open)
       const keepPane = $("#pane [data-compose]") ? $("#pane") : null;
       const drawerOpen = $("#sidebar")?.classList.contains("open");
+      const active = document.activeElement;
+      const sel = active && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
+      const winY = window.scrollY;
       for (const [now, next] of swaps) now.replaceWith(document.adoptNode(next));
       const newPane = $("#pane");
-      if (keepPane && newPane && newPane !== keepPane && newPane.querySelector(".detail")?.dataset.message === keepPane.querySelector(".detail")?.dataset.message) newPane.replaceWith(keepPane);
+      if (keepPane && newPane && newPane !== keepPane && newPane.querySelector(".detail")?.dataset.message === keepPane.querySelector(".detail")?.dataset.message) {
+        newPane.replaceWith(keepPane);
+        if (keepPane.contains(active)) {
+          active.focus({ preventScroll: true });
+          if (sel) { try { active.setSelectionRange(sel[0], sel[1]); } catch { /* not a text field */ } }
+          window.scrollTo({ top: winY });
+        }
+      }
       if (drawerOpen) $("#sidebar")?.classList.add("open");
       restoreState(state, focusSubject);
       if (moved) { const c = cardEl(moved); if (c) c.style.viewTransitionName = "moved-card"; }
@@ -352,22 +366,22 @@
   function afterRender() {
     syncSwitches();
     setupNav();
-    updateFades();
-    measureFilter();
     updateDock();
     syncModal();
     baseline.sorted = null;
     hidePill();
   }
-  // the filter row's real height: the desktop pane fits below it, the "newly sorted" pill clears it
-  function measureFilter() {
-    const fb = $("#filterbar");
-    if (fb) document.body.style.setProperty("--filter-h", fb.offsetHeight + "px");
-  }
   // phone: the email sheet covers the page, so hide the page from focus and VoiceOver
   function syncModal() {
-    const modal = phone.matches && paneOpen();
-    for (const el of [$(".skip"), $(".top"), $("#sidebar"), $("#board"), $(".fab")]) if (el) el.inert = modal;
+    const win = $("#compose-dock .compose-window:not(.minimized)");
+    const covered = phone.matches && (paneOpen() || !!win); // full-screen email or compose
+    const drawer = !!$("#sidebar.open");
+    for (const el of [$(".skip"), $(".top"), $(".fab")]) if (el) el.inert = covered || drawer;
+    const side = $("#sidebar");
+    if (side) side.inert = covered && !drawer;
+    if ($("#board")) $("#board").inert = covered || drawer;
+    const pane = $("#pane");
+    if (pane) pane.inert = (phone.matches && !!win) || drawer;
   }
   phone.addEventListener?.("change", syncModal);
 
@@ -432,7 +446,7 @@
     layout.classList.remove("pane-out");
     pane.innerHTML = html; // rendered by our server; email text is already escaped
     pane.scrollTop = 0;
-    if (boardHidden() || !wasOpen) window.scrollTo({ top: 0 });
+    if (boardHidden()) window.scrollTo({ top: 0 });
     lastHTML.content = null; // the DOM no longer matches the last full render
     if (wasOpen) {
       pane.classList.remove("swap");
@@ -460,6 +474,17 @@
     if (!card || card.dataset.read === "1") return false;
     card.classList.remove("unread");
     card.dataset.read = "1";
+    const rowForm = $(".row-act", card);
+    if (rowForm) {
+      const v = $("[name=is_read]", rowForm);
+      if (v) v.value = "0";
+      const b = $("button", rowForm);
+      if (b) {
+        b.title = "Mark as unread";
+        b.setAttribute("aria-label", b.getAttribute("aria-label").replace(/^Mark as read/, "Mark as unread"));
+        $("use", b)?.setAttribute("href", "#i-unread");
+      }
+    }
     $(".sender .sr-only", card)?.remove();
     lastHTML.content = null; // the next real refresh must redraw
     const count = card.closest(".col")?.querySelector(".col-head .count");
@@ -480,11 +505,7 @@
     dec($('.sidebar .nav-item[href="/"] .n'));
     const email = card.dataset.account;
     if (email) dec($$(".sidebar .acct-item").find((a) => a.dataset.email === email)?.querySelector(".n"));
-    const badge = $(".tabs .tab[aria-current] .tab-new");
-    if (badge && /new$/.test(badge.textContent)) {
-      const left = parseInt(badge.textContent, 10) - 1;
-      if (left > 0) badge.textContent = `${left} new`; else badge.remove();
-    }
+    dec($(".tabs .tab[aria-current] .tab-new[data-new]"));
     return true;
   }
 
@@ -524,7 +545,8 @@
     const link = $(".card-link", card);
     const behavior = reduceMotion.matches ? "auto" : "smooth";
     if (paneOpen()) {
-      if (card.dataset.id !== openId()) openMessage(card.dataset.id, link.href);
+      const inPane = !!$("#pane")?.contains(document.activeElement);
+      if (card.dataset.id !== openId()) openMessage(card.dataset.id, link.href, { focus: inPane || boardHidden() });
       if (!phone.matches) card.scrollIntoView({ block: "nearest", behavior });
       if (moveFocus && !phone.matches && !$("#pane")?.contains(document.activeElement)) link.focus({ preventScroll: true });
     } else {
@@ -645,6 +667,7 @@
       }
       return r;
     }
+    if ((m = url.match(/^\/outbox\/(\d+)\/undo$/))) { undoSend(m[1]); return null; }
     if ((m = url.match(/^\/rules\/(\d+)\/delete$/))) {
       const holder = form.closest("[data-kind][data-pattern]");
       holder?.classList.add("leaving");
@@ -861,7 +884,8 @@
       return;
     }
     if ($("#sidebar.open")) { e.preventDefault(); closeDrawer(); return; }
-    if (t.closest && t.closest(".compose-window") && t.matches("input, textarea, select")) { e.preventDefault(); t.blur(); return; }
+    const cw = (t.closest && t.closest(".compose-window")) || (t === document.body ? composeWindow() : null);
+    if (cw) { e.preventDefault(); closeWindowKeepingDraft(cw); return; }
     // first Esc leaves a pane field, the next one closes the pane (Mail)
     if (t.closest && t.closest("#pane") && t.matches("input:not([type=radio]):not([type=checkbox]), textarea, select")) {
       e.preventDefault();
@@ -883,6 +907,7 @@
       return;
     }
     if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (composeOpening && e.key.length === 1) { e.preventDefault(); typedAhead += e.key; return; }
     const t = e.target instanceof Element ? e.target : document.body;
     if (e.key === "Escape") { onEscape(e, t); return; }
     if (t.closest("input, textarea, select, [contenteditable]") || t.isContentEditable) return;
@@ -906,7 +931,11 @@
       case "e": readKey(true, true); break;
       case "U": if (!e.shiftKey) return; readKey(false, false); break;
       case "I": if (!e.shiftKey) return; readKey(true, false); break;
-      case "z": runUndo(); break;
+      case "z": {
+        const p = pendingSend();
+        if (p) { sends[p.id]?.snack && dismiss(sends[p.id].snack); undoSend(p.id); } else runUndo();
+        break;
+      }
       case "c": openCompose("/compose?next=" + encodeURIComponent(location.pathname + location.search)); break;
       case "r": case "a": case "f": {
         const link = $(`#pane .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) || (!$("#pane") ? $(`.detail .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) : null);
@@ -944,19 +973,6 @@
   window.addEventListener("scroll", () => {
     if (!ticking) { ticking = true; requestAnimationFrame(onScroll); }
   }, { passive: true });
-
-  // --- filter row edge fades ---------------------------------------------------------------
-  function updateFades() {
-    const row = $(".filter-row");
-    if (!row) return;
-    const max = row.scrollWidth - row.clientWidth;
-    row.classList.toggle("fade-l", row.scrollLeft > 2);
-    row.classList.toggle("fade-r", max - row.scrollLeft > 2);
-  }
-  document.addEventListener("scroll", (e) => {
-    if (e.target instanceof Element && e.target.classList.contains("filter-row")) updateFades();
-  }, { capture: true, passive: true });
-  window.addEventListener("resize", () => { updateFades(); measureFilter(); }, { passive: true });
 
   // --- phone dock: current quadrant ----------------------------------------------------------
   // The current section is the last one whose top has passed a reading line 30% down the
@@ -1044,7 +1060,7 @@
     }
     const dock = $(".dock");
     // the dock shows filtered counts when filters are on; global stats would contradict them
-    if (dock && s.quadrant_unread && !$("#filterbar .active-filters")) {
+    if (dock && s.quadrant_unread && !dock.hasAttribute("data-filtered")) {
       $$(".dock-item", dock).forEach((a) => {
         const key = a.dataset.col;
         const n = s.quadrant_unread[key] ?? 0;
@@ -1089,18 +1105,25 @@
 
   // --- sidebar: rail on desktop, drawer on tablets and phones --------------------------------
   const wide = media("(min-width: 1024px)");
+  const drawerOpen = () => !!$("#sidebar.open");
   function openDrawer() {
     const side = $("#sidebar");
     if (!side) return;
     side.classList.add("open");
     $(".scrim")?.removeAttribute("hidden");
     $("[data-drawer]")?.setAttribute("aria-expanded", "true");
+    syncModal();
     $(".nav-item[aria-current], .compose-btn", side)?.focus({ preventScroll: true });
   }
   function closeDrawer() {
-    $("#sidebar")?.classList.remove("open");
+    const side = $("#sidebar");
+    if (!side?.classList.contains("open")) return;
+    const had = side.contains(document.activeElement);
+    side.classList.remove("open");
     $(".scrim")?.setAttribute("hidden", "");
     $("[data-drawer]")?.setAttribute("aria-expanded", "false");
+    syncModal();
+    if (had || document.activeElement === document.body) $("[data-drawer]")?.focus({ preventScroll: true });
   }
   document.addEventListener("click", (e) => {
     if (e.target.closest("[data-drawer]")) {
@@ -1108,10 +1131,10 @@
         const on = root.dataset.rail !== "on";
         if (on) root.dataset.rail = "on"; else delete root.dataset.rail;
         store.set("pref:rail", on ? "on" : "off");
-      } else if ($("#sidebar.open")) closeDrawer(); else openDrawer();
+      } else if (drawerOpen()) closeDrawer(); else openDrawer();
       return;
     }
-    if (e.target.closest("[data-drawer-close]") || ($("#sidebar.open") && e.target.closest("#sidebar a"))) closeDrawer();
+    if (e.target.closest("[data-drawer-close]") || (drawerOpen() && e.target.closest("#sidebar a"))) closeDrawer();
   });
   wide.addEventListener?.("change", closeDrawer);
 
@@ -1124,15 +1147,30 @@
     subject: form.elements.subject?.value || "", body: form.elements.body?.value || "",
     from: form.elements.from_account?.value || "",
   });
+  // the email waiting in its Undo time (or, with `settling`, one whose result isn't shown yet)
+  function pendingSend(settling = false) {
+    let p = null;
+    try { p = JSON.parse(session.get("outbox:pending") || "null"); } catch { p = null; }
+    return p && p.id && p.until > Date.now() - (settling ? 120000 : 0) ? p : null;
+  }
+  function clearPending(id) {
+    const p = pendingSend(true);
+    if (!p || String(p.id) === String(id)) session.set("outbox:pending", "");
+  }
   function setStatus(form, text) { const s = $("[data-compose-status]", form); if (s) s.textContent = text; }
   function saveDraft(form) {
-    if (!draftKey(form)) return;
+    clearTimeout(form._saveTimer);
+    // a sent or closed form never writes itself back (it would come back as "Draft restored")
+    if (!draftKey(form) || form.dataset.sent || !form.isConnected) return;
     const f = fieldsOf(form);
     if (!f.body.trim() && !f.to.trim() && !f.subject.trim()) { forgetDraft(form); return; }
     store.set(draftKey(form), JSON.stringify({ ...f, at: Date.now() }));
     setStatus(form, "Draft saved");
   }
-  function forgetDraft(form) { try { localStorage.removeItem(draftKey(form)); } catch { /* storage blocked */ } }
+  function forgetDraft(form) {
+    clearTimeout(form._saveTimer);
+    try { localStorage.removeItem(draftKey(form)); } catch { /* storage blocked */ }
+  }
   function restoreDraft(form) {
     if (form.dataset.restored || form.elements.draft_id) return; // an undone/failed email brings its own text
     form.dataset.restored = "1";
@@ -1153,15 +1191,26 @@
     if (!form || form.dataset.ready) return;
     form.dataset.ready = "1";
     restoreDraft(form);
-    let t = 0;
-    form.addEventListener("input", () => { clearTimeout(t); setStatus(form, ""); t = setTimeout(() => saveDraft(form), 600); });
+    form.addEventListener("input", () => {
+      clearTimeout(form._saveTimer);
+      setStatus(form, "");
+      form._saveTimer = setTimeout(() => saveDraft(form), 600);
+    });
     form.addEventListener("change", () => saveDraft(form));
   }
+  // nothing typed while a reply or compose box is on its way is lost, or taken as a shortcut
+  let composeOpening = false;
+  let typedAhead = "";
   function focusCompose(form) {
     const empty = ["to", "subject"].map((k) => form.elements[k]).find((el) => el && el.type !== "hidden" && !el.value.trim());
     const target = form.dataset.mode === "reply" || form.dataset.mode === "all" ? form.elements.body : empty || form.elements.body;
     target?.focus({ preventScroll: false });
-    if (target === form.elements.body) target.setSelectionRange(0, 0);
+    if (target === form.elements.body && !typedAhead) target.setSelectionRange(0, 0);
+    if (typedAhead && target) {
+      try { target.setRangeText(typedAhead, target.selectionStart, target.selectionEnd, "end"); } catch { target.value += typedAhead; }
+      typedAhead = "";
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    }
   }
   async function fetchCompose(href, variant) {
     const url = new URL(href, location.href);
@@ -1173,33 +1222,48 @@
     tpl.innerHTML = (await res.text()).trim(); // rendered by our server; everything is escaped
     return tpl.content.firstElementChild;
   }
-  async function openCompose(href) {
+  async function openCompose(href, { replace = false } = {}) {
     const dock = $("#compose-dock");
     if (!dock) { location.href = href; return; }
     const open = composeWindow();
     if (open) {
-      // one window at a time (Gmail stacks them; one keeps it simple): bring it back
       open.classList.remove("minimized");
       const f = fieldsOf(open);
-      if (f.body.trim() || f.to.trim()) { focusCompose(open); toast("Finish or close the message you're writing first", { kind: "info" }); return; }
+      if (!replace && (f.body.trim() || f.to.trim())) {
+        // one window at a time (Gmail stacks them; one keeps it simple): bring it back
+        focusCompose(open);
+        toast("Finish or close the message you're writing first", { kind: "info" });
+        return;
+      }
+      saveDraft(open); // replaced (e.g. by an undone email): it waits as a draft
+      open.dataset.sent = "1";
       open.remove();
     }
+    composeOpening = true;
     let form;
-    try { form = await fetchCompose(href, "window"); } catch { location.href = href; return; }
+    try { form = await fetchCompose(href, "window"); } catch { composeOpening = false; location.href = href; return; } finally { composeOpening = false; }
     if (!form) return;
     dock.append(form);
     enhanceCompose(form);
     focusCompose(form);
+    if (phone.matches && history.state?.compose !== 1) history.pushState({ ...(history.state || {}), compose: 1 }, "");
+    syncModal();
   }
   async function openReply(link) {
     const slot = link.closest(".detail")?.querySelector("[data-reply-slot]");
     if (!slot) { location.href = link.href; return; }
     const current = $("[data-compose]", slot);
     if (current && current.dataset.mode === link.dataset.reply) { focusCompose(current); return; }
-    if (current && fieldsOf(current).body.trim() && !confirm("Discard the reply you're writing?")) return;
+    if (current && fieldsOf(current).body.trim()) {
+      if (!confirm("Discard the reply you're writing?")) return;
+      forgetDraft(current);
+      current.dataset.sent = "1";
+    }
+    composeOpening = true;
     let form;
-    try { form = await fetchCompose(link.href, "inline"); } catch { location.href = link.href; return; }
+    try { form = await fetchCompose(link.href, "inline"); } catch { composeOpening = false; location.href = link.href; return; } finally { composeOpening = false; }
     if (!form) return;
+    if (!slot.isConnected) { typedAhead = ""; return; } // the email changed meanwhile
     slot.replaceChildren(form);
     enhanceCompose(form);
     form.scrollIntoView({ block: "nearest", behavior: reduceMotion.matches ? "auto" : "smooth" });
@@ -1207,7 +1271,18 @@
   }
   function closeCompose(form) {
     if (form.classList.contains("compose-page")) { location.href = form.elements.next?.value || "/"; return; }
+    form.dataset.sent = form.dataset.sent || "closed";
+    clearTimeout(form._saveTimer);
+    const win = form.classList.contains("compose-window");
     form.remove();
+    if (win && history.state?.compose === 1) history.back();
+    syncModal();
+  }
+  function closeWindowKeepingDraft(form) {
+    saveDraft(form);
+    const had = fieldsOf(form).body.trim();
+    closeCompose(form);
+    if (had) toast("Draft saved on this device", { kind: "info" });
   }
   function invalid(form, field, message) {
     const el = field && form.elements[field];
@@ -1224,10 +1299,12 @@
     const f = fieldsOf(form);
     if (!f.to.trim() && !f.cc.trim() && !f.bcc.trim()) { invalid(form, "to", "Add at least one recipient."); return; }
     if (form.elements.subject?.type !== "hidden" && !f.subject.trim() && !confirm("Send this message without a subject?")) return;
+    clearTimeout(form._saveTimer);
     form.classList.add("busy");
     const r = await post(form.getAttribute("action"), formBody(form));
     form.classList.remove("busy");
     if (!r.ok) { invalid(form, r.data.field, r.message); return; }
+    form.dataset.sent = "1";
     forgetDraft(form);
     const next = r.data.next || "/";
     const pending = { id: r.data.id, until: Date.now() + (r.data.undo_seconds || UNDO_FALLBACK) * 1000 };
@@ -1240,42 +1317,72 @@
     trackSend(pending);
   }
   // Snackbar while the email waits (Undo), then "Message sent" or what went wrong.
+  const sends = {}; // outbox id -> { snack, poll }
   function trackSend(p) {
     session.set("outbox:pending", JSON.stringify(p));
+    settle(p.id);
+    const t = sends[p.id] = { snack: null, poll: 0 };
     const left = p.until - Date.now();
     if (left > 500) {
-      toast("Sending…", { timeout: left, actions: [{ label: "Undo", run: () => undoSend(p.id) }, { label: "View", run: () => { location.href = "/sent"; } }] });
+      t.snack = toast("Sending…", { timeout: left, keep: true, actions: [
+        { label: "Undo", run: () => undoSend(p.id) },
+        { label: "View", key: false, run: () => { location.href = `/sent#s${p.id}`; } }] });
+      // the Undo time is real: the snackbar goes when it's over, even while hovered or focused
+      if (t.snack) t.snack._end = setTimeout(() => dismiss(t.snack), left);
+      if (t.snack && document.activeElement === document.body) $(".flash-btn", t.snack)?.focus({ preventScroll: true });
     }
-    setTimeout(() => pollSend(p.id, 0), Math.max(left, 0) + 2500);
+    t.poll = setTimeout(() => pollSend(p.id, 0), Math.max(left, 0) + 2500);
+  }
+  // stop following one email: its snackbar goes and it isn't asked about again
+  function settle(id) {
+    const t = sends[id];
+    if (!t) return;
+    delete sends[id];
+    clearTimeout(t.poll);
+    if (t.snack) { clearTimeout(t.snack._end); dismiss(t.snack); }
   }
   async function pollSend(id, tries) {
+    if (!sends[id]) return; // undone (or followed again) meanwhile
     let s;
     try {
       const res = await fetch(`/api/outbox/${encodeURIComponent(id)}`, { headers: { Accept: "application/json" }, cache: "no-store" });
       if (res.status === 401) { toLogin(); return; }
+      if (res.status === 404) { settle(id); clearPending(id); return; } // discarded, or sent again as a new email
       s = await res.json();
     } catch { s = null; }
+    if (!sends[id]) return;
     if (s && s.status === "sent") {
-      session.set("outbox:pending", "");
-      toast(s.note ? `Sent, but ${s.note.charAt(0).toLowerCase()}${s.note.slice(1)}` : "Message sent", { kind: s.note ? "info" : "ok", actions: [{ label: "View", run: () => { location.href = "/sent"; } }] });
+      settle(id);
+      clearPending(id);
+      toast(s.note ? `Sent, but ${s.note.charAt(0).toLowerCase()}${s.note.slice(1)}` : "Message sent", { kind: s.note ? "info" : "ok", actions: [{ label: "View", run: () => { location.href = `/sent#s${id}`; } }] });
       if ($("#board")) refresh().catch(() => {});
       return;
     }
     if (s && s.status === "failed") {
-      session.set("outbox:pending", "");
-      toast(`Not sent: ${s.error || "something went wrong"}`, { kind: "err", actions: [{ label: "Edit", run: () => openCompose(`/compose?draft=${id}`) }] });
+      settle(id);
+      clearPending(id);
+      toast(`Not sent: ${s.error || "something went wrong"}`, { kind: "err", actions: [{ label: "Edit", run: () => openCompose(`/compose?draft=${id}`, { replace: true }) }] });
       if ($("#board")) refresh().catch(() => {});
       return;
     }
-    if (s && s.status === "cancelled") { session.set("outbox:pending", ""); return; }
-    if (tries < 20) setTimeout(() => pollSend(id, tries + 1), 3000);
+    if (s && s.status === "cancelled") { settle(id); clearPending(id); return; }
+    if (tries < 20) sends[id].poll = setTimeout(() => pollSend(id, tries + 1), 3000);
+    else settle(id);
   }
+  let undoing = null;
   async function undoSend(id) {
+    if (undoing === String(id)) return; // pressed twice
+    undoing = String(id);
     const r = await post(`/outbox/${encodeURIComponent(id)}/undo`, {});
-    session.set("outbox:pending", "");
-    if (!r.ok) { toast(r.message, { kind: "err" }); return; }
+    undoing = null;
+    if (!r.ok) { toast(r.message, { kind: "err" }); return; } // too late: "Message sent" follows
+    settle(id);
+    clearPending(id);
     toast("Sending undone", { kind: "info" });
-    openCompose(r.data.edit_url || `/compose?draft=${id}`);
+    if (!$("#compose-dock")) { location.href = r.data.edit_url || `/compose?draft=${id}`; return; }
+    // the undone email opens for editing; one being written is kept as a draft
+    openCompose(r.data.edit_url || `/compose?draft=${id}`, { replace: true });
+    if (location.pathname === "/sent") refresh().catch(() => {});
   }
   async function aiDraft(form) {
     if (!form || form.classList.contains("writing")) return;
@@ -1290,11 +1397,14 @@
     setStatus(form, "");
     if (!r.ok) { toast(r.message, { kind: "err" }); return; }
     body.value = r.data.text || "";
+    // the whole draft is in view before anything can be sent
+    body.style.height = "";
+    if (body.scrollHeight > body.clientHeight) body.style.height = Math.min(body.scrollHeight + 4, innerHeight * 0.7) + "px";
     saveDraft(form);
     body.focus();
     body.setSelectionRange(0, 0);
     body.scrollTop = 0;
-    toast("Draft ready: read it and edit before sending", { actions: before.trim() ? [{ label: "Undo", run: () => { body.value = before; saveDraft(form); } }] : [] });
+    toast("Draft ready: read it and edit before sending", { actions: before.trim() ? [{ label: "Undo", key: false, run: () => { body.value = before; saveDraft(form); } }] : [] });
   }
   function toggleHelp(form, show) {
     const row = $("[data-help-row]", form);
@@ -1311,48 +1421,60 @@
     const reply = t.closest("a[data-reply]");
     if (reply && reply.closest("#pane, .detail-page")) { e.preventDefault(); openReply(reply); return; }
     const neu = t.closest("a[data-compose-new], a[data-compose-draft]");
-    if (neu && $("#compose-dock")) { e.preventDefault(); closeDrawer(); openCompose(neu.getAttribute("href")); return; }
+    if (neu && $("#compose-dock")) {
+      e.preventDefault();
+      closeDrawer();
+      openCompose(neu.getAttribute("href"), { replace: neu.hasAttribute("data-compose-draft") });
+      return;
+    }
     const form = t.closest("form[data-compose]");
     if (!form) return;
     if (t.closest("[data-show-cc]")) { showCc(form); form.elements.cc?.focus(); return; }
     if (t.closest("[data-help-toggle]")) { toggleHelp(form); return; }
-    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); return; }
+    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); return; }
     if (t.closest("[data-compose-max]")) { form.classList.toggle("maximized"); form.classList.remove("minimized"); return; }
-    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); focusCompose(form); return; }
-    if (t.closest("[data-compose-close]")) { saveDraft(form); closeCompose(form); if (fieldsOf(form).body.trim()) toast("Draft saved on this device", { kind: "info" }); return; }
+    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); syncModal(); focusCompose(form); return; }
+    if (t.closest("[data-compose-close]")) { closeWindowKeepingDraft(form); return; }
     if (t.closest("[data-compose-discard]")) {
       e.preventDefault();
       const f = fieldsOf(form);
       if ((f.body.trim() || f.to.trim()) && !confirm("Discard this draft?")) return;
+      form.dataset.sent = "discarded";
       forgetDraft(form);
       closeCompose(form);
       toast("Draft discarded", { kind: "info" });
     }
   });
+  // phone: Back closes the full-screen compose (the draft is kept), like Gmail's app
+  window.addEventListener("popstate", () => {
+    const win = composeWindow();
+    if (win && history.state?.compose !== 1) { saveDraft(win); win.dataset.sent = "closed"; win.remove(); syncModal(); }
+  });
+  // leaving the page keeps what was typed in the last moment
+  window.addEventListener("pagehide", () => $$("form[data-compose]").forEach(saveDraft));
+  // logging out forgets the drafts this browser kept
+  document.addEventListener("submit", (e) => {
+    if (!e.target.matches?.(".logout-form")) return;
+    try { Object.keys(localStorage).filter((k) => k.startsWith("draft:")).forEach((k) => localStorage.removeItem(k)); } catch { /* storage blocked */ }
+    session.set("outbox:pending", "");
+  }, true);
   // a send that was still waiting when the page changed (or a full-page compose just sent)
-  (() => {
-    let p = null;
-    try { p = JSON.parse(session.get("outbox:pending") || "null"); } catch { p = null; }
-    if (p && p.id) trackSend(p);
-  })();
+  (() => { const p = pendingSend(true); if (p) trackSend(p); })();
   $$("form[data-compose]").forEach((f) => { enhanceCompose(f); if (f.classList.contains("compose-page")) focusCompose(f); });
+  // Sent: "View" opens that email
+  (() => {
+    const m = location.hash.match(/^#s(\d+)$/);
+    const item = m && document.getElementById(`s${m[1]}`);
+    const d = item && $("details", item);
+    if (d) { d.open = true; $("summary", d)?.focus({ preventScroll: true }); item.scrollIntoView({ block: "center" }); }
+  })();
 
   // --- start ---------------------------------------------------------------------------------
   restoreColumns();
   syncSwitches();
   setupNav();
-  updateFades();
-  measureFilter();
   onScroll();
   syncModal();
   if (phone.matches && paneOpen()) $("#pane .detail-subject")?.focus({ preventScroll: true }); // /?open=N on a phone
-  (() => { // keep the selected account chip in view on narrow screens
-    const row = $(".filter-row");
-    const chip = $(".chips .chip-link.on", row || document);
-    if (!row || !chip) return;
-    const left = chip.offsetLeft - row.offsetLeft;
-    if (left + chip.offsetWidth > row.scrollLeft + row.clientWidth) row.scrollLeft = left - 24;
-    updateFades();
-  })();
   schedulePoll(2000);
 })();

@@ -157,13 +157,28 @@ def _migrate(conn) -> None:
                      "WHERE is_read = 1 AND priority_score IS NOT NULL")
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
-    if version < 2:  # sending: reply headers on saved mail (filled for new mail from now on)
+    if version < 2:  # sending: reply headers (Reply-To, Cc, References) on saved mail
         have = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
         for col in NEW_MESSAGE_COLUMNS:
             if col not in have:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        if conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone():
+            # mail synced before this has none: the next sync re-reads its headers once
+            conn.execute("INSERT OR REPLACE INTO auth_state (key, value) VALUES (?, 'pending')",
+                         (HEADERS_BACKFILL,))
         conn.execute("PRAGMA user_version = 2")
         conn.commit()
+
+
+HEADERS_BACKFILL = "headers_backfill"
+
+
+def backfill_pending(conn) -> bool:
+    return conn.execute("SELECT 1 FROM auth_state WHERE key = ?", (HEADERS_BACKFILL,)).fetchone() is not None
+
+
+def backfill_done(conn) -> None:
+    conn.execute("DELETE FROM auth_state WHERE key = ?", (HEADERS_BACKFILL,))
 
 
 def upsert_account(conn, email: str, folder: str, label: str, color: str) -> sqlite3.Row:

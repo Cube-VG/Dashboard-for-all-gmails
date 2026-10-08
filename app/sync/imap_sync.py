@@ -6,8 +6,7 @@ Mail is never marked as read and nothing is changed on the server.
 
 import logging
 import re
-from datetime import date, datetime, timedelta, timezone
-from email.utils import formataddr
+from datetime import date, timedelta, timezone
 
 from bs4 import BeautifulSoup
 from imap_tools import AND, U, MailBox, MailMessage
@@ -83,9 +82,32 @@ REFERENCES_CHARS = 2000  # a long thread's References header; the newest ids are
 
 
 def _addresses(values) -> str | None:
-    """'Name <a@b.com>, c@d.com' (names quoted when they contain commas), or None."""
-    out = [formataddr((v.name or "", v.email)) for v in values or () if v.email]
+    """'Name <a@b.com>, c@d.com' (names quoted when they contain commas), or None. Readable
+    (no =?utf-8?...?= encoding), and an address that can't be used is skipped, never fatal."""
+    from app.send.message import display
+
+    out = []
+    for v in values or ():
+        try:
+            if v.email and "@" in v.email:
+                out.append(display(v.name or "", v.email.strip()))
+        except Exception:  # noqa: BLE001 - one odd address never stops a sync
+            continue
     return ", ".join(out) or None
+
+
+def _parse_all(messages, account) -> list[dict]:
+    """parse_message for each email; one that can't be read is logged and skipped (its uid
+    still counts as fetched, so it can never block the account's sync)."""
+    out = []
+    for msg in messages:
+        try:
+            out.append(parse_message(msg))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: skipped email uid %s that couldn't be read: %s", account.email,
+                        getattr(msg, "uid", "?"), exc)
+            out.append({"uid": int(msg.uid), "skip": True})
+    return out
 
 
 def parse_message(msg: MailMessage) -> dict:
@@ -130,6 +152,7 @@ def _new_uids(mailbox: MailBox, last_uid: int) -> list[str]:
 def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox) -> int:
     """Fetch mail newer than what we already have. Returns the number of new messages."""
     row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
+    conn.commit()  # never hold the database's write lock while waiting on a mail server
     password = config.get_password(account.email)
     if not password:
         raise RuntimeError(
@@ -146,6 +169,7 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
             if row["uidvalidity"] is not None:
                 log.warning("%s: UIDVALIDITY changed, re-fetching mailbox", account.email)
             db.reset_account_mailbox(conn, row["id"], uidvalidity)
+            conn.commit()
             last_uid = 0
 
         uids = _new_uids(mailbox, last_uid)
@@ -156,15 +180,15 @@ def sync_account(conn, account: config.Account, mailbox_factory=connect_mailbox)
             return 0
         added = 0
         batch: list[dict] = []
-        for msg in fetch_messages(mailbox, uids):
-            batch.append(parse_message(msg))
+        for parsed in _parse_all(fetch_messages(mailbox, uids), account):
+            batch.append(parsed)
             if len(batch) >= FETCH_BULK:
-                added += db.insert_messages(conn, row["id"], batch)
+                added += db.insert_messages(conn, row["id"], [m for m in batch if not m.get("skip")])
                 db.mark_synced(conn, row["id"], max(m["uid"] for m in batch))
                 conn.commit()
                 batch.clear()
         if batch:
-            added += db.insert_messages(conn, row["id"], batch)
+            added += db.insert_messages(conn, row["id"], [m for m in batch if not m.get("skip")])
             last_uid = max(m["uid"] for m in batch)
         db.mark_synced(conn, row["id"], last_uid)
         conn.commit()
@@ -177,6 +201,7 @@ def refresh_bodies(conn, account: config.Account, since_iso: str,
     Only the text and reply headers change; scores, read state and corrections are kept.
     `progress(done, total)` is called after every batch."""
     row = db.upsert_account(conn, account.email, account.folder, account.label, account.color)
+    conn.commit()
     uids = [str(r["uid"]) for r in conn.execute(
         "SELECT uid FROM messages WHERE account_id = ? AND received_at >= ? ORDER BY uid DESC",
         (row["id"], since_iso))]
@@ -193,8 +218,9 @@ def refresh_bodies(conn, account: config.Account, since_iso: str,
         if int(status["UIDVALIDITY"]) != row["uidvalidity"]:
             return 0  # the server renumbered its mail; the next sync re-fetches it anyway
         for start in range(0, len(uids), FETCH_BULK):  # newest first, one batch per commit
-            for msg in fetch_messages(mailbox, uids[start:start + FETCH_BULK]):
-                m = parse_message(msg)
+            for m in _parse_all(fetch_messages(mailbox, uids[start:start + FETCH_BULK]), account):
+                if m.get("skip"):
+                    continue
                 conn.execute("""UPDATE messages SET body_text = ?, snippet = ?, reply_to = ?, cc_email = ?,
                                 references_hdr = ? WHERE account_id = ? AND uid = ?""",
                              (m["body_text"], m["snippet"], m["reply_to"], m["cc_email"],

@@ -58,7 +58,7 @@ COPYFILE_DISABLE=1 tar czf - ${TARFLAGS[@]+"${TARFLAGS[@]}"} --exclude=./.venv -
 
 say "Setting up the VM (packages, service, private HTTPS address)"
 # the VM shows times in this Mac's time zone (e.g. Asia/Kolkata), not UTC
-TZ_NAME="$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##' | tr -cd 'A-Za-z0-9_+/-')"
+TZ_NAME="$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##' | tr -cd 'A-Za-z0-9_+/-' || true)"
 run "cd ~/$DIR && INBOX_TZ='$TZ_NAME' bash deploy/setup-vm.sh --from-mac"
 
 if [ "$SETTINGS" = 1 ]; then

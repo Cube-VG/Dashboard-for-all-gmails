@@ -26,6 +26,7 @@ def parse_addresses(text: str | None) -> list[tuple[str, str]]:
     """'Ann <a@x.com>, b@y.com; c@z.com' -> [("Ann", "a@x.com"), ("", "b@y.com"), ...].
     Duplicates are dropped; anything that isn't an address raises AddressError."""
     text = re.sub(r"[;\r\n\t]+", ",", text or "")
+    text = re.sub(r"\s*,[\s,]*", ", ", text).strip(" ,")  # "a@x.com;" and "a, , b," are fine
     out, seen = [], set()
     for name, addr in getaddresses([text]):
         name, addr = name.strip(), addr.strip()
@@ -43,9 +44,15 @@ def parse_addresses(text: str | None) -> list[tuple[str, str]]:
     return out
 
 
+def _one_line(text: str | None) -> str:
+    """Every kind of line break (incl. \x0b, \x1c, \x85, U+2028) becomes a space: mail headers
+    can't contain any of them, and one hidden in an incoming subject would block every reply."""
+    return " ".join((text or "").splitlines()).replace("\t", " ")
+
+
 def display(name: str, addr: str) -> str:
     """'Ann Lee <ann@x.com>', quoting a name with commas or brackets."""
-    name = re.sub(r"[\r\n\"]", "", name or "").strip()
+    name = _one_line(name).replace('"', "").strip()
     if not name:
         return addr
     if re.search(r"[,;<>@()\[\]:\\.]", name):
@@ -101,24 +108,35 @@ def _safe_parse(text) -> list[tuple[str, str]]:
         return []
 
 
+def canonical(addr: str) -> str:
+    """The mailbox an address delivers to: me+shop@x.com is me@x.com, and for Gmail dots and
+    googlemail.com don't count either (v.p.2722@googlemail.com is vp2722@gmail.com)."""
+    local, _, domain = (addr or "").strip().lower().rpartition("@")
+    local = local.split("+", 1)[0]
+    if domain in ("gmail.com", "googlemail.com"):
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"{local}@{domain}"
+
+
 def reply_recipients(original, mode: str, own: set[str]) -> tuple[list, list]:
-    """(to, cc) for Reply or Reply all. `own` holds your addresses (lowercase), which never
-    get a copy of their own reply."""
+    """(to, cc) for Reply or Reply all. `own` holds your addresses, which never get a copy of
+    their own reply (aliases with +tags or Gmail dots included)."""
+    own = {canonical(a) for a in own}
     sender = _safe_parse(_get(original, "reply_to")) or \
         [(original["from_name"] or "", original["from_email"] or "")]
     sender = [p for p in sender if ADDR_RE.fullmatch(p[1])]
     others = _safe_parse(original["to_email"]) + _safe_parse(_get(original, "cc_email"))
-    if sender and all(a.lower() in own for _, a in sender):
+    if sender and all(canonical(a) in own for _, a in sender):
         # replying to mail you sent yourself: it goes back to the people you wrote to
-        sender, others = [p for p in others if p[1].lower() not in own][:1], others
+        sender = [p for p in others if canonical(p[1]) not in own][:1]
     to = sender
     if mode != "all":
         return to, []
-    taken = {a.lower() for _, a in to} | own
+    taken = {canonical(a) for _, a in to} | own
     cc = []
     for name, addr in others:
-        if addr.lower() not in taken:
-            taken.add(addr.lower())
+        if canonical(addr) not in taken:
+            taken.add(canonical(addr))
             cc.append((name, addr))
     return to, cc
 
@@ -168,7 +186,7 @@ def full_text(body: str, mode: str, original, include_quote: bool) -> str:
 
 
 def clean_subject(subject: str | None) -> str:
-    return re.sub(r"[\r\n\t]+", " ", subject or "").strip()[:MAX_SUBJECT_CHARS]
+    return re.sub(r" {2,}", " ", _one_line(subject)).strip()[:MAX_SUBJECT_CHARS]
 
 
 def build(account, to, cc, bcc, subject: str, text: str, in_reply_to: str | None = None,

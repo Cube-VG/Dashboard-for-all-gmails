@@ -5,7 +5,8 @@ Uses the same OpenRouter key, models and daily budget as sorting, and never send
 """
 
 import re
-from datetime import date
+import unicodedata
+from datetime import date, datetime, timezone
 
 import openai
 
@@ -73,7 +74,11 @@ def build_messages(mode: str, original, instruction: str, from_name: str = "",
 
 
 def clean_draft(text: str) -> str:
-    text = re.sub(r"^\s*```[a-z]*\s*|\s*```\s*$", "", text or "", flags=re.I)
+    """The model's text, tidied. Invisible characters and blank-looking lines go, so nothing
+    can hide far below what fits in the reply box."""
+    text = "".join(ch for ch in (text or "") if unicodedata.category(ch) != "Cf")
+    text = re.sub(r"[^\S\n]+$", "", text, flags=re.M)
+    text = re.sub(r"^\s*```[a-z]*\s*|\s*```\s*$", "", text, flags=re.I)
     text = re.sub(r"^\s*subject\s*:[^\n]*\n+", "", text, flags=re.I)  # a model that ignored the rule
     text = re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n"))
     return text.strip().strip('"').strip()
@@ -92,7 +97,7 @@ def write(conn, *, mode: str, original=None, instruction: str = "", from_name: s
         raise DraftError("AI drafts need your OpenRouter key (OPENROUTER_API_KEY in .env).")
     if hasattr(client, "with_options"):
         client = client.with_options(timeout=TIMEOUT)
-    day = day or date.today().isoformat()
+    day = day or datetime.now(timezone.utc).date().isoformat()  # the same day sorting counts on
     messages = build_messages(mode, original, instruction, from_name)
     models = list(dict.fromkeys(m for m in (config.AI_MODEL, config.AI_FALLBACK_MODEL) if m))
     error = None

@@ -17,5 +17,15 @@
   if (get("advance") === "off") d.setAttribute("data-advance", "off");
   if (get("split") === "on") d.setAttribute("data-split", "on");
   if (get("rail") === "on") d.setAttribute("data-rail", "on");
+  // signed out (or the session ended): unsent drafts in this browser go too
+  if (location.pathname === "/login") {
+    try {
+      for (var k = localStorage.length - 1; k >= 0; k--) {
+        var key = localStorage.key(k);
+        if (key && key.indexOf("draft:") === 0) localStorage.removeItem(key);
+      }
+      sessionStorage.removeItem("outbox:pending");
+    } catch (e) { /* storage blocked: nothing saved */ }
+  }
   d.classList.add("js");
 })();

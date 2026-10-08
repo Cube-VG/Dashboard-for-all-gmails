@@ -21,7 +21,8 @@
   <button type="button" class="icon-btn menu-btn" data-drawer aria-label="Main menu" aria-controls="sidebar" aria-expanded="false" title="Main menu"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
   <a class="brand" href="/"><span class="brand-mark"><svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg></span><span class="brand-name">Inbox</span></a>
   <form id="filters" class="search" method="get" action="/" role="search">
-    {% if f.view != 'inbox' and page in ('inbox', 'all', 'matrix') %}<input type="hidden" name="view" value="{{ f.view }}">{% endif %}
+    {# like Gmail, a search is one list of every match: from the Inbox tabs it opens All mail #}
+    <input type="hidden" name="view" value="{{ 'matrix' if page == 'matrix' else 'all' }}">
     {% if f.account %}<input type="hidden" name="account" value="{{ f.account }}">{% endif %}
     {% if f.unread %}<input type="hidden" name="unread" value="1">{% endif %}
     {% if f.unsorted %}<input type="hidden" name="sorted" value="no">{% endif %}

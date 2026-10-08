@@ -462,3 +462,45 @@ def test_launcher_stops_if_port_busy(launch, monkeypatch, capsys):
     assert state["code"] == 1
     assert state["scheduler"] is None
     assert "already in use" in capsys.readouterr().out
+
+
+def test_reply_headers_are_reread_once_after_upgrading(factory, monkeypatch):
+    from app.sync import imap_sync
+
+    conn = factory()
+    add_mail(conn, "synced before sending existed")
+    conn.execute("INSERT INTO auth_state (key, value) VALUES (?, 'pending')", (db.HEADERS_BACKFILL,))
+    conn.commit()
+    conn.close()
+    calls = []
+
+    def refresh(conn, account, since):
+        calls.append(account.email)
+        if account.email == "down@example.com":
+            raise OSError("server down")
+        return 1
+
+    monkeypatch.setattr(imap_sync, "sync_all", lambda conn, accounts: {})
+    monkeypatch.setattr(imap_sync, "refresh_bodies", refresh)
+    accounts = [config.Account(label="Down", email="down@example.com", imap_host="imap.example.com"),
+                config.Account(label="Work", email=ACCOUNT, imap_host="imap.example.com")]
+    fakes = Fakes()
+    result = runner.run_cycle(factory, accounts, classify=fakes.classify, notify=fakes.notify)
+    assert calls == ["down@example.com", ACCOUNT] and "error" not in result  # one account down: the rest still run
+    runner.run_cycle(factory, accounts, classify=fakes.classify, notify=fakes.notify)
+    assert calls == ["down@example.com", ACCOUNT]  # once, never a re-download every cycle
+    conn = factory()
+    assert not db.backfill_pending(conn)
+    conn.close()
+
+
+def test_backfill_skipped_with_a_custom_sync(factory):
+    conn = factory()
+    add_mail(conn, "old")
+    conn.execute("INSERT INTO auth_state (key, value) VALUES (?, 'pending')", (db.HEADERS_BACKFILL,))
+    conn.commit()
+    conn.close()
+    Fakes().run(factory)
+    conn = factory()
+    assert db.backfill_pending(conn)  # left for the real sync to do
+    conn.close()
