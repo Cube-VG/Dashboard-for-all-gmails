@@ -424,6 +424,7 @@
   }
 
   async function post(url, data) {
+    pageCache.clear(); // remembered tabs would show the email before this change
     const body = data instanceof URLSearchParams ? data : new URLSearchParams(data);
     try {
       const res = await fetch(url, { method: "POST", body, headers: { Accept: "application/json" } });
@@ -459,6 +460,7 @@
       focusId: !card && a && a.id && a !== document.body ? a.id : null,
       focusInPane: !!(a && $("#pane")?.contains(a)),
       hadFocus: !!(a && a !== document.body),
+      navHref: a?.matches?.("a[href]") ? a.getAttribute("href") : null,
       more: $$("section.col").filter((c) => $(".more-cards[open]:not(.shutting)", c)).map((c) => c.dataset.col),
     };
   }
@@ -483,11 +485,17 @@
       next?.focus({ preventScroll: true });
     }
   }
-  async function doRefresh({ moved = null, focusSubject = false, swapPane = false } = {}) {
-    const res = await fetch(location.href, { headers: { Accept: "text/html" }, cache: "no-store" });
-    if (res.status === 401 || (res.redirected && new URL(res.url).pathname === "/login")) { toLogin(); return false; }
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+  // `nav`: a tab, filter or page was chosen (show it from the top); `html`: the page, already
+  // on its way (prefetched on touch); `seq`: skip it if a newer tap came in meanwhile
+  async function doRefresh({ moved = null, focusSubject = false, swapPane = false, nav = false, html = null, seq = 0 } = {}) {
+    let text;
+    try { text = await (html || loadPage(location.pathname + location.search)); } catch (err) {
+      if (err?.message === "login") { toLogin(); return false; }
+      throw err;
+    }
+    if (seq && seq !== navSeq) return false;
+    shownKey = pageKey();
+    const doc = new DOMParser().parseFromString(text, "text/html");
     document.title = doc.title;
     const swaps = [];
     for (const id of ["sidebar", "content"]) {
@@ -501,6 +509,8 @@
     }
     if (!swaps.length) return false;
     const state = captureState();
+    // the tab underline may be gliding to its tab: the new one carries on from there
+    const flying = nav && performance.now() < glideUntil ? $(".tab[aria-current] .tab-ind")?.getBoundingClientRect() : null;
     const apply = () => {
       // a reply being written in the pane survives the re-render (same email still open)
       const keepPane = $("#pane [data-compose]:not(.leaving)") ? $("#pane") : null;
@@ -519,6 +529,18 @@
         }
       }
       if (drawerOpen) { $("#sidebar")?.classList.add("open"); if (drawerSpring.moving()) paintDrawer(drawerSpring.value); }
+      if (nav) {
+        window.scrollTo({ top: 0 });
+        if (flying) glideTabInd(flying, glideUntil - performance.now());
+        if (!reduceMotion.matches) $("#board")?.animate?.([{ opacity: 0.4 }, { opacity: 1 }], { duration: 180, easing: "linear" });
+        // keep focus on what was pressed (its copy in the new page), never drop to <body>
+        const a = document.activeElement;
+        if (!a || a === document.body || !a.isConnected) {
+          const same = state.navHref && $$("a[href]").find((x) => x.getAttribute("href") === state.navHref);
+          (same || $(".tab[aria-current]"))?.focus({ preventScroll: true });
+        }
+        return;
+      }
       restoreState(state, focusSubject);
       if (moved) { const c = cardEl(moved); if (c) c.style.viewTransitionName = "moved-card"; }
       if (swapPane) { const pane = $("#pane"); pane?.classList.add("swap"); setTimeout(() => pane?.classList.remove("swap"), 200); }
@@ -536,6 +558,111 @@
     afterRender();
     return true;
   }
+  // --- tabs, filters, views and pages swap in place (no page reload) ------------------------
+  // The page starts loading when a finger or the mouse goes down on the link (a tap takes
+  // ~100ms more to become a click), and a page seen in the last half minute shows at once
+  // while a fresh copy is fetched behind it.
+  const pageCache = new Map(); // "/?tab=later" -> { at, text: Promise<string> }
+  const SHOW_CACHED_MS = 120000; // shown at once, then refreshed behind it (anything you change clears it)
+  let navSeq = 0, shownKey = "", glideUntil = 0, navWaitTimer = 0;
+  const urlKey = (href) => { const u = new URL(href, location.href); return u.pathname + u.search; };
+  function pageKey(href = location.href) {
+    const u = new URL(href, location.href);
+    u.searchParams.delete("open");
+    return u.pathname + "?" + [...u.searchParams].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map((kv) => kv.join("=")).join("&");
+  }
+  function loadPage(key) {
+    return fetch(key, { headers: { Accept: "text/html" }, cache: "no-store" }).then((res) => {
+      if (res.status === 401 || (res.redirected && new URL(res.url).pathname === "/login")) throw new Error("login");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.text();
+    });
+  }
+  function prefetch(href, maxAge = 15000) {
+    const key = urlKey(href);
+    const hit = pageCache.get(key);
+    if (hit && performance.now() - hit.at < maxAge) return hit.text;
+    const text = loadPage(key);
+    text.catch(() => { if (pageCache.get(key)?.text === text) pageCache.delete(key); });
+    pageCache.set(key, { at: performance.now(), text });
+    if (pageCache.size > 12) pageCache.delete(pageCache.keys().next().value);
+    return text;
+  }
+  // links that only change what the inbox shows (tab, filter, view, page)
+  function inPlace(a) {
+    if (!a || !$("#board") || a.target || a.hasAttribute("download") || a.hasAttribute("data-open")
+        || a.matches("[data-compose-new], [data-compose-draft], [data-reply], [data-close], [data-drawer]")) return false;
+    const url = new URL(a.href, location.href);
+    if (url.origin !== location.origin || url.pathname !== "/" || url.searchParams.has("open")) return false;
+    if (url.hash && url.search === location.search) return false; // a jump within the page (#col-…)
+    return true;
+  }
+  function glideTabInd(from, ms = 400) {
+    const ind = $(".tab[aria-current] .tab-ind");
+    if (!ind || !from?.width || reduceMotion.matches || !ind.animate) return;
+    const to = ind.getBoundingClientRect();
+    if (!to.width) return;
+    glideUntil = performance.now() + ms;
+    ind.animate([
+      { transform: `translateX(${from.left - to.left}px) scaleX(${from.width / to.width})`, transformOrigin: "left center" },
+      { transform: "none", transformOrigin: "left center" },
+    ], { duration: Math.max(120, ms), easing: SPRING });
+  }
+  // the tapped tab shows as chosen straight away, before the list arrives
+  function markChosen(a) {
+    const tab = a.closest(".tab");
+    if (!tab || tab.getAttribute("aria-current") === "page") return;
+    const from = $(".tab[aria-current] .tab-ind")?.getBoundingClientRect();
+    $$(".tab[aria-current]").forEach((t) => t.removeAttribute("aria-current"));
+    tab.setAttribute("aria-current", "page");
+    glideTabInd(from);
+  }
+  async function navigate(href, { push = true, from = null } = {}) {
+    const key = urlKey(href);
+    const seq = ++navSeq;
+    $$("form[data-compose]").forEach(saveDraft);
+    if (push) history.pushState(null, "", key);
+    if (from) markChosen(from);
+    clearTimeout(navWaitTimer);
+    navWaitTimer = setTimeout(() => { if (seq === navSeq) root.classList.add("nav-wait"); }, 150); // only if it's slow
+    const seen = pageCache.get(key);
+    const fresh = seen && performance.now() - seen.at < SHOW_CACHED_MS;
+    try {
+      await refresh({ nav: true, html: prefetch(key, SHOW_CACHED_MS), seq });
+      // shown from the half-minute cache: fetch it again and quietly update anything that changed
+      if (fresh && seq === navSeq) { pageCache.delete(key); refresh({ html: prefetch(key), seq }).catch(() => {}); }
+    } catch {
+      if (seq === navSeq) location.href = key; // offline or an error: a normal page load explains it
+    } finally {
+      if (seq === navSeq) { clearTimeout(navWaitTimer); root.classList.remove("nav-wait"); }
+    }
+  }
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest?.("a[href]");
+    if (!inPlace(a)) return;
+    e.preventDefault();
+    navigate(a.href, { from: a });
+  });
+  // start loading on press; on desktop, also after a short hover
+  document.addEventListener("pointerdown", (e) => {
+    const a = e.target.closest?.("a[href]");
+    if (inPlace(a)) prefetch(a.href);
+  }, { passive: true, capture: true });
+  let hoverTimer = 0;
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType !== "mouse") return;
+    clearTimeout(hoverTimer);
+    const a = e.target.closest?.("a[href]");
+    if (inPlace(a)) hoverTimer = setTimeout(() => prefetch(a.href), 80);
+  }, { passive: true });
+  // the inbox swaps in place; anywhere else (Sent, Rules) it's a normal page load
+  function go(href) {
+    const url = new URL(href, location.href);
+    if ($("#board") && url.origin === location.origin && url.pathname === "/") navigate(url.href);
+    else location.href = href;
+  }
+
   function afterRender() {
     syncSwitches();
     setupNav();
@@ -826,6 +953,7 @@
 
   window.addEventListener("popstate", (e) => {
     if (!$("#pane")) return;
+    if (shownKey && pageKey() !== shownKey) { navigate(location.href, { push: false }); return; } // another tab or filter
     const id = new URLSearchParams(location.search).get("open");
     if (id) { if (id !== openId() || !paneOpen()) openMessage(id, location.href, { push: false }); }
     // after Safari's own edge swipe-back the email is already gone from view: no second slide
@@ -1077,7 +1205,7 @@
       const params = new URLSearchParams(new FormData(form));
       for (const [key, value] of [...params]) if (!value) params.delete(key);
       const query = params.toString();
-      location.href = form.getAttribute("action") + (query ? "?" + query : "");
+      go(form.getAttribute("action") + (query ? "?" + query : ""));
       return;
     }
     if (form.hasAttribute("data-compose")) {
@@ -1123,7 +1251,7 @@
         const u = new URL(location.href);
         u.searchParams.delete("q");
         u.searchParams.delete("open");
-        location.href = u.pathname + u.search;
+        go(u.pathname + u.search);
       }
       return;
     }
@@ -1161,7 +1289,7 @@
       clearTimeout(gTimer);
       gTimer = 0;
       const target = { i: "/", a: "/?view=all", l: "/?view=all", m: "/?view=matrix", t: "/sent", r: "/rules" }[e.key];
-      if (target) { e.preventDefault(); location.href = target; }
+      if (target) { e.preventDefault(); go(target); }
       return;
     }
     switch (e.key) {
@@ -1812,6 +1940,18 @@
   })();
 
   // --- start ---------------------------------------------------------------------------------
+  shownKey = pageKey();
+  // once the inbox has settled, fetch the other tabs one by one (~10 KB each), so the first
+  // tap on any of them is instant too
+  if ($(".tabs")) {
+    const warm = async () => {
+      for (const t of [...$$(".tab:not([aria-current])"), ...$$(".tab[aria-current]")]) { // this one too, for coming back
+        if (document.visibilityState !== "visible") return;
+        try { await prefetch(t.href, SHOW_CACHED_MS); } catch { return; }
+      }
+    };
+    setTimeout(() => (window.requestIdleCallback ? requestIdleCallback(warm, { timeout: 4000 }) : warm()), 1500);
+  }
   restoreColumns();
   syncSwitches();
   setupNav();

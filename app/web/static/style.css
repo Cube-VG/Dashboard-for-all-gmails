@@ -267,7 +267,10 @@ details[open] > summary .chev-r { transform: rotate(90deg); }
 }
 .sync-track { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; overflow: hidden; pointer-events: none; }
 .sync-line { position: absolute; left: 0; bottom: 0; width: 30%; height: 2px; border-radius: 2px; background: var(--text); opacity: 0; transform: translateX(-100%); }
-.is-syncing .sync-line { opacity: .9; animation: indeterminate 1200ms ease-in-out infinite; }
+.is-syncing .sync-line, .nav-wait .sync-line { opacity: .9; animation: indeterminate 1200ms ease-in-out infinite; }
+/* a tab, filter or page that takes a moment: the list steps back until the new one arrives */
+.board { transition: opacity 150ms linear; }
+.nav-wait .board { opacity: .55; }
 @keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
 .top .icon-btn { width: 48px; height: 48px; background: transparent; color: var(--text-2); }
 @media (hover: hover) and (pointer: fine) { .top .icon-btn:hover { background: var(--fill-press); color: var(--text); } }
@@ -755,6 +758,12 @@ body[data-page="matrix"] main .sorting { background: var(--surface); }
 :root[data-density="compact"] .row-link { min-height: 32px; }
 :root[data-density="compact"] .row { contain-intrinsic-size: auto 32px; }
 .list .more { padding: 12px 16px 16px; }
+/* Gmail's pager: "51–100 of 312" ‹ › in the toolbar, and again under the list */
+.pager { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.pager .icon-btn { width: 36px; height: 36px; background: transparent; color: var(--text-2); }
+.pager span.icon-btn { opacity: .35; }
+@media (hover: hover) and (pointer: fine) { .pager a.icon-btn:hover { background: var(--fill-press); color: var(--text); } }
+.pager-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px 16px 16px; color: var(--text-2); font-size: .8125rem; }
 /* ===== 14. Empty, done and error states ================================================== */
 .empty-state, .done-state {
   display: grid; justify-items: center; gap: 12px; margin: 8px auto 0; max-width: 640px;
@@ -1234,7 +1243,9 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .main-col { padding: 0; }
   main { border-radius: 0; min-height: calc(100dvh - var(--top-h)); }
   .list-toolbar { padding: 6px 12px; border-radius: 0; }
-  .list-toolbar .range { display: none; }
+  .list-toolbar .range, .list-toolbar .pager { display: none; }
+  .pager-foot { justify-content: center; padding: 12px 16px 20px; }
+  .pager .icon-btn { width: 44px; height: 44px; }
   .tabs { padding: 0 4px; }
   .tab { flex: none; gap: 8px; min-height: 48px; padding: 0 12px; }
   .tab .q-glyph { width: 22px; height: 22px; }
@@ -1355,7 +1366,7 @@ html.js .js-collapsed, html.js .js-hidden { display: none; }
   .meter-fill { transition: none; }
   .chev, .knob::after { transition: none; }
   .is-syncing .sync-btn .spin { animation: none; }
-  .is-syncing .sync-line { animation: none; transform: none; left: 0; width: 40%; }
+  .is-syncing .sync-line, .nav-wait .sync-line { animation: none; transform: none; left: 0; width: 40%; }
   .done-check .ic, .flash-glyph .ic, .is-done .sync-btn .done-ic { animation: none; }
   .pane.swap .detail { animation-duration: 150ms; }
 }

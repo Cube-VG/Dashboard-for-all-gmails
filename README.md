@@ -74,7 +74,9 @@ On a Mac, if pop-ups don't appear, allow notifications for **Script Editor** in 
 In the dashboard (laid out like Gmail, so there's nothing new to learn):
 - **Inbox** has one tab per priority, like Gmail's Primary / Promotions / Social:
   **Do now** (urgent + important), **Schedule** (important), **Quick reply** (urgent),
-  **Later** (neither), and **Not sorted** while the AI is still working.
+  **Later** (neither), and **Not sorted** while the AI is still working. Tabs, filters and
+  searches switch instantly (no page reload), and long lists show 50 at a time with Gmail's
+  ‹ › arrows for older mail.
 - The sidebar has **Compose**, **All mail** (everything by priority), **Priority matrix**
   (the four boxes side by side), **Sent**, **Sender rules**, and your accounts as coloured
   labels: click one to see only that account.

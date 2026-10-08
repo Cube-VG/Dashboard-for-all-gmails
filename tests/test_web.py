@@ -558,3 +558,46 @@ def test_tailscale_name_is_allowed_but_other_sites_are_not(env, monkeypatch):
     assert ok.status_code == 200  # tailscale serve rewrote Host to 127.0.0.1, Origin is the ts.net name
     bad = env.client.post(url, headers={**JSON, "Origin": "https://evil.example.com"})
     assert bad.status_code == 403
+
+
+# --- speed: Gmail-style pages, compression, cached static files ------------------------------
+
+@pytest.fixture
+def many(tmp_path):
+    path = tmp_path / "many.db"
+    conn = db.connect(path)
+    acc = db.upsert_account(conn, "me@gmail.com", "INBOX", "Personal", "#d93025")
+    db.insert_messages(conn, acc["id"], [mail(i, f"Mail {i:03d}", i) for i in range(1, 121)])
+    conn.commit()
+    conn.close()
+    return TestClient(create_app(conn_factory=lambda: db.connect(path)))
+
+
+def test_lists_show_50_at_a_time_like_gmail(many):
+    first = many.get("/", params={"view": "all"}).text
+    assert "1–50 of 120" in first and first.count('class="card row') == 50
+    assert 'href="/?view=all&amp;page=2"' in first and 'aria-label="Newer emails"' not in first
+    second = many.get("/", params={"view": "all", "page": "2"}).text
+    assert "51–100 of 120" in second and "Mail 051" in second and "Mail 050" not in second
+    assert 'href="/?view=all"' in second and 'href="/?view=all&amp;page=3"' in second  # newer / older
+    last = many.get("/", params={"view": "all", "page": "3"}).text
+    assert "101–120 of 120" in last and last.count('class="card row') == 20 and 'aria-label="Older emails"' not in last
+    assert "101–120 of 120" in many.get("/", params={"view": "all", "page": "99"}).text  # past the end: the last page
+    assert "1–50 of 120" in many.get("/", params={"view": "all", "page": "x"}).text
+    tab = many.get("/", params={"tab": "unsorted", "page": "2"}).text  # inbox tabs page the same way
+    assert "51–100 of 120" in tab and 'href="/?tab=unsorted&amp;page=3"' in tab
+    # opening an email keeps the page; changing what's shown starts again at page 1
+    assert re.search(r'href="/\?view=all&amp;open=\d+&amp;page=2"', second)
+    assert 'href="/?view=all&amp;unread=1"' in second
+
+
+def test_pages_are_compressed_and_never_cached(many):
+    r = many.get("/", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip" and r.headers["cache-control"] == "no-store"
+
+
+def test_versioned_static_files_are_cached_for_good(many):
+    assert "immutable" in many.get("/static/style.css", params={"v": "123"}).headers["cache-control"]
+    assert "immutable" not in many.get("/static/style.css").headers.get("cache-control", "")
+    page = many.get("/").text
+    assert re.search(r'/static/app\.js\?v=\d+', page) and re.search(r'/static/style\.css\?v=\d+', page)

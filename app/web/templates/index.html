@@ -7,6 +7,14 @@
 {% set EMPTY = {"do": "Nothing urgent. You're clear.", "schedule": "Nothing to plan.", "quick": "No quick replies waiting.", "later": "Nothing parked here.", "unsorted": "Everything is sorted."} %}
 {% set only_unread = f.unread and not (f.account or f.q or f.category or f.unsorted) %}
 {% set acct = chips|selectattr('email', 'equalto', f.account)|first %}
+{% macro pager_arrows(p) -%}
+<span class="pager">
+  {%- if p.newer %}<a class="icon-btn" href="{{ p.newer }}" title="Newer" aria-label="Newer emails"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg></a>
+  {%- else %}<span class="icon-btn" aria-hidden="true"><svg class="ic"><use href="#i-back"/></svg></span>{% endif %}
+  {%- if p.older %}<a class="icon-btn" href="{{ p.older }}" title="Older" aria-label="Older emails"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg></a>
+  {%- else %}<span class="icon-btn" aria-hidden="true"><svg class="ic"><use href="#i-next"/></svg></span>{% endif -%}
+</span>
+{%- endmacro %}
 <div class="layout{% if msg %} with-pane{% endif %}" id="layout">
   <div class="board" id="board">
     <h1 class="sr-only">{% if f.view == "all" %}All mail{% elif f.view == "matrix" %}Priority matrix{% else %}Inbox: {{ "Not sorted" if f.tab == "unsorted" else ACTIONS[f.tab] }}{% endif %}{% if f.q %}, search “{{ f.q }}”{% endif %}</h1>
@@ -18,7 +26,8 @@
       {% if f.unsorted %}<a class="af" href="{{ f.url(sorted='') }}" aria-label="Remove filter Not sorted yet"><b>Not sorted yet</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
       {% if f.active %}<a class="clear-link" href="{{ f.url(account='', q='', unread='', category='', sorted='') }}">Clear filters</a>{% endif %}
       <span class="spacer"></span>
-      {% if stats.total %}<span class="range num">{% if f.view == "matrix" %}{{ total }} email{{ "" if total == 1 else "s" }}{% elif cards %}1–{{ cards|length }} of {{ total }}{% else %}0 of {{ total }}{% endif %}</span>{% endif %}
+      {% if stats.total %}<span class="range num">{% if f.view == "matrix" %}{{ total }} email{{ "" if total == 1 else "s" }}{% elif cards %}{{ pager.first }}–{{ pager.last }} of {{ total }}{% else %}0 of {{ total }}{% endif %}</span>{% endif %}
+      {% if pager and pager.pages > 1 %}{{ pager_arrows(pager) }}{% endif %}
     </div>
 
     {% for a in problems %}
@@ -128,7 +137,7 @@
     {% if cards %}
     <section class="list" data-col="{{ f.tab }}" aria-label="{{ 'Not sorted yet' if f.tab == 'unsorted' else ACTIONS[f.tab] }}">
       <div class="cards">{% for m in cards %}{{ ui.row(m, show_acct=not f.account) }}{% endfor %}</div>
-      {% if total > cards|length %}<p class="more">Showing the top {{ cards|length }} of {{ total }}. Search or filter to see the rest.</p>{% endif %}
+      {% if pager.pages > 1 %}<nav class="pager-foot" aria-label="More emails"><span class="range num">{{ pager.first }}–{{ pager.last }} of {{ total }}</span>{{ pager_arrows(pager) }}</nav>{% endif %}
     </section>
     {% elif only_unread %}
     <div class="done-state">
@@ -160,7 +169,7 @@
     {% if cards %}
     <section class="list" data-col="list" aria-label="All email by priority">
       <div class="cards">{% for m in cards %}{{ ui.row(m, show_quad=True, show_acct=not f.account) }}{% endfor %}</div>
-      {% if total > cards|length %}<p class="more">Showing the top {{ cards|length }} of {{ total }}. Search or filter to see the rest.</p>{% endif %}
+      {% if pager.pages > 1 %}<nav class="pager-foot" aria-label="More emails"><span class="range num">{{ pager.first }}–{{ pager.last }} of {{ total }}</span>{{ pager_arrows(pager) }}</nav>{% endif %}
     </section>
     {% elif only_unread %}
     <div class="done-state">

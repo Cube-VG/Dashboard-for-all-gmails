@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import config, db
@@ -44,7 +45,7 @@ log = logging.getLogger(__name__)
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
 
-LIST_LIMIT = 300  # emails in a list (inbox tab, All mail)
+PAGE_SIZE = 50  # emails per page in a list (inbox tab, All mail), like Gmail
 COLUMN_LIMIT = 100  # emails per matrix column
 GROUPS = tuple(QUADRANTS)  # do, schedule, quick, later
 ACTIONS = {"do": "Do now", "schedule": "Schedule", "quick": "Quick reply", "later": "Later"}
@@ -94,6 +95,7 @@ class Filters:
     unread: bool = False
     category: str = ""
     unsorted: bool = False  # ?sorted=no: only mail the AI has not sorted yet
+    page: int = 1  # ?page=N: older mail, 50 at a time
 
     @classmethod
     def from_query(cls, params) -> "Filters":
@@ -107,6 +109,7 @@ class Filters:
             unread=params.get("unread", "") in ("1", "on", "true"),
             category=params.get("category", "").strip(),
             unsorted=params.get("sorted", "") == "no",
+            page=max(1, min(_int(params.get("page")) or 1, 10_000)),
         )
 
     @property
@@ -114,10 +117,15 @@ class Filters:
         return bool(self.account or self.q or self.unread or self.category or self.unsorted)
 
     def url(self, **changes) -> str:
-        """Inbox URL with these filters, overridden by `changes`; empty values are dropped."""
+        """Inbox URL with these filters, overridden by `changes`; empty values are dropped.
+        Changing a filter, tab or view starts again at page 1; opening an email keeps the page."""
+        page = changes.pop("page", None)
+        if page is None:
+            page = self.page if set(changes) <= {"open"} else 1
         params = {"view": self.view, "tab": self.tab, "account": self.account, "q": self.q,
                   "unread": "1" if self.unread else "", "category": self.category,
-                  "sorted": "no" if self.unsorted else "", **changes}
+                  "sorted": "no" if self.unsorted else "", **changes,
+                  "page": page if page and page > 1 else ""}
         if params["view"] != "inbox" or params["tab"] == "do":
             params["tab"] = ""
         if params["view"] == "inbox":
@@ -316,12 +324,23 @@ def _card(row) -> dict:
 
 
 def _fetch(conn, where: str, args: list, extra: str = "", extra_args: list = (),
-           limit: int = LIST_LIMIT) -> list[dict]:
+           limit: int = PAGE_SIZE, offset: int = 0) -> list[dict]:
     sql = CARD_COLUMNS + FROM + where
     if extra:
         sql += (" AND " if where else " WHERE ") + "(" + extra + ")"
-    rows = conn.execute(sql + ORDER + " LIMIT ?", [*args, *extra_args, limit]).fetchall()
+    rows = conn.execute(sql + ORDER + " LIMIT ? OFFSET ?", [*args, *extra_args, limit, offset]).fetchall()
     return [_card(r) for r in rows]
+
+
+def _pager(f: "Filters", total: int) -> dict:
+    """Which page of a list is shown (past the end shows the last page), Gmail's "51–100 of 312"."""
+    pages = max(1, -(-total // PAGE_SIZE))
+    page = min(f.page, pages)
+    start = (page - 1) * PAGE_SIZE
+    return {"page": page, "pages": pages, "offset": start, "first": start + 1 if total else 0,
+            "last": min(total, start + PAGE_SIZE), "total": total,
+            "newer": f.url(page=page - 1) if page > 1 else None,
+            "older": f.url(page=page + 1) if page < pages else None}
 
 
 def _counts(conn, where: str = "", args: list = ()) -> tuple[dict, dict]:
@@ -376,14 +395,16 @@ def _tabs(conn, f: Filters) -> tuple[list[dict], list[dict], int]:
         tabs.append({"key": "unsorted", "title": "Not sorted", "total": stats["unscored"],
                      "unread": None})
     if f.tab == "unsorted":
-        cards = _fetch(conn, where, args, "m.importance IS NULL OR m.urgency IS NULL", [])
         total = stats["unscored"]
+        pager = _pager(f, total)
+        cards = _fetch(conn, where, args, "m.importance IS NULL OR m.urgency IS NULL", [], offset=pager["offset"])
     else:
         found = sorted(pairs[f.tab])
         cond = " OR ".join("(m.importance = ? AND m.urgency = ?)" for _ in found)
-        cards = _fetch(conn, where, args, cond, [v for p in found for v in p]) if found else []
         total = stats["quadrants"][f.tab]
-    return tabs, cards, total
+        pager = _pager(f, total)
+        cards = _fetch(conn, where, args, cond, [v for p in found for v in p], offset=pager["offset"]) if found else []
+    return tabs, cards, total, pager
 
 
 def _categories(conn, f: Filters | None = None) -> list[str]:
@@ -571,12 +592,19 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         if not path.startswith("/static/"):
             # nothing with email in it is kept by the browser (back button on a shared computer)
             resp.headers.setdefault("Cache-Control", "no-store")
+        elif "v" in request.query_params:
+            # ?v= changes with every file change, so a phone never has to ask again
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         resp.headers.setdefault("Content-Security-Policy", CSP)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         # same-origin, not no-referrer: under no-referrer browsers send `Origin: null` with
         # plain form posts, which the guard above has to reject (that broke every no-JS form)
         resp.headers.setdefault("Referrer-Policy", "same-origin")
         return resp
+
+    # pages are mostly repeated markup: compressed they're ~20x smaller over Tailscale / mobile data
+    # (outermost middleware, so every response is compressed, including the guard's)
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
@@ -671,13 +699,14 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             ctx = _page(request, conn, f, page=f.view, open_id=open_id, msg=None)
             if f.view == "all":
                 where, args = f.where()
-                ctx["cards"] = _fetch(conn, where, args, limit=LIST_LIMIT)
                 ctx["total"] = conn.execute("SELECT COUNT(*)" + FROM + where, args).fetchone()[0]
+                ctx["pager"] = _pager(f, ctx["total"])
+                ctx["cards"] = _fetch(conn, where, args, offset=ctx["pager"]["offset"])
                 ctx["unsorted"] = {"total": 0}
             elif f.view == "matrix":
                 ctx["columns"], ctx["unsorted"], ctx["total"] = _matrix(conn, f)
             else:
-                ctx["tabs"], ctx["cards"], ctx["total"] = _tabs(conn, f)
+                ctx["tabs"], ctx["cards"], ctx["total"], ctx["pager"] = _tabs(conn, f)
                 ctx["unsorted"] = {"total": ctx["stats"]["unscored"] if not f.active else
                                    next((t["total"] for t in ctx["tabs"] if t["key"] == "unsorted"), 0)}
             if open_id is not None:
