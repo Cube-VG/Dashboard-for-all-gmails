@@ -149,3 +149,7 @@ python -m app.cli refresh-bodies   # re-download email text for saved mail (keep
 ```
 python -m pytest
 ```
+
+## License
+
+[MIT](LICENSE): use it, change it and share it freely.
