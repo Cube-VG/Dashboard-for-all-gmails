@@ -18,81 +18,102 @@ Free-tier terms change. Check [cloud.google.com/free](https://cloud.google.com/f
 
 ---
 
-## 1. Tailscale on your Mac and iPhone (5 min)
+## 1. Tailscale (5 min)
 
-1. Install Tailscale from the Mac App Store and the iPhone App Store.
-2. Sign in on both with the same account, for example your Google account.
+1. Install **Tailscale** from the App Store on your Mac and your iPhone, and sign in on both with the
+   same account.
+2. In a browser, open [login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns).
+   Make sure **MagicDNS** is on, then click **Enable HTTPS** at the bottom.
+3. Open [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+   and click **Generate auth key…** → **Generate key**. The defaults are right: one use only, not
+   reusable. Copy the key; it starts with `tskey-auth-`.
 
-## 2. Create the free VM (10 min)
+## 2. Create the VM (5 min, in your browser)
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign up.
+1. Sign up at [console.cloud.google.com](https://console.cloud.google.com).
    - Google asks for a card to verify you. The free VM doesn't charge it.
-2. ⚠️ Set a safety alarm: **Billing → Budgets & alerts → Create budget → $1**.
-   - You'll get an email if anything ever costs money.
-3. Go to **Compute Engine → VM instances → Create instance**.
-   - The first time, click **Enable** for the Compute Engine API.
-4. Fill in the form:
+   - Make sure a project is selected at the top (new accounts get "My First Project").
+2. On your **Mac**, copy the VM script to the clipboard:
+   ```
+   cd ~/Documents/dashboard-for-all-gmails && git pull
+   pbcopy < deploy/create-vm.sh
+   ```
+3. Open **Cloud Shell** at [shell.cloud.google.com](https://shell.cloud.google.com). It's a free
+   terminal in the browser.
+4. In Cloud Shell:
+   - type `cat > create-vm.sh` and press Enter
+   - paste with **Cmd+V**
+   - press **Ctrl+D**
+5. Run it with your Tailscale key:
+   ```
+   bash create-vm.sh tskey-auth-PASTE-YOUR-KEY
+   ```
+   If Cloud Shell asks to **Authorize**, click it.
 
-   | Setting | Value |
-   |---|---|
-   | Name | `inbox` |
-   | ⚠️ Region | `us-central1` (Iowa), `us-east1` or `us-west1`. Only these are free. |
-   | ⚠️ Machine type | **e2-micro** |
-   | ⚠️ Boot disk | **Change** → Debian 12, disk type **Standard persistent disk** (not "Balanced"), 30 GB |
-   | Firewall | leave HTTP/HTTPS **unticked** (Tailscale doesn't need them) |
+The script does all of this:
 
-5. Click **Create**.
-6. When the VM is running, click **SSH** next to it. A terminal opens in your browser.
+| Step | |
+|---|---|
+| ⚠️ Free-tier settings | `e2-micro` · `us-central1` · 30 GB **standard** disk · Debian 12 |
+| Budget alarm | Emails you at the first cent of cost, if Google allows it to be set automatically |
+| Tailscale | Joins the VM to your Tailscale as **inbox** and lets your Mac log in to it |
+| Clean-up | Removes the used key from the VM's settings |
 
-## 3. Install the app on the VM (10 min)
+6. When it says **Done**, open [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines).
+   Click **inbox** → **⋯** → **Disable key expiry**, so the VM never drops off your Tailscale.
 
-In the browser SSH window:
+## 3. Send everything from your Mac (5 min)
+
+In Terminal on your Mac, with the Tailscale app connected:
 
 ```
-git clone https://github.com/cube-vg/dashboard-for-all-gmails.git
-cd dashboard-for-all-gmails
-git checkout claude/dreamy-wright-isuy3u
-bash deploy/setup-vm.sh
+cd ~/Documents/dashboard-for-all-gmails
+bash deploy/push-to-vm.sh --all
 ```
 
-- **Logging in to GitHub:** the repo is private, so `git clone` asks for your GitHub username and a
-  **token** instead of your password.
-  - Create the token at github.com → Settings → Developer settings → Fine-grained tokens.
-  - Give it access to this repo only, with **Contents: Read-only**.
+This copies to the VM:
+- the app
+- `accounts.yaml`
+- your mailbox passwords, read from your Mac's Keychain
+- your OpenRouter key and AI settings
+- your mail, with its scores, sender rules and corrections
 
-The script asks for these, in order:
+It then installs and starts the app. Everything goes over Tailscale's encrypted connection, and
+nothing secret is written to a file on your Mac.
 
-1. **Your OpenRouter key.** Paste it; it stays hidden as you paste.
-2. **Your mailboxes.** An editor opens.
-   - On your Mac, run `cat accounts.yaml` in the project folder and copy what it prints.
-   - Paste it into the editor, then save with **Ctrl+O**, **Enter**, and exit with **Ctrl+X**.
-3. **Each mailbox password.** Use the same Gmail App Passwords as on your Mac, or create new ones.
-   - On the VM they're stored in `.env`, which only your user can read.
-4. **A Tailscale login link.** Open it and sign in with the same account as on your Mac and iPhone.
-   - If it also prints a link to turn on HTTPS, open that too.
+- **The first time**, Tailscale may print a link to approve the login. Open it.
+- **If macOS asks** whether Python may read your Keychain, click **Allow**.
 
-At the end the script prints your dashboard's address, for example `https://inbox.tail1234.ts.net/`.
+At the end it prints your address, like `https://inbox.tail1234.ts.net/`.
 
-- **iPhone:** open the address in Safari, then Share → **Add to Home Screen**.
+- **iPhone:** open it in Safari, then Share → **Add to Home Screen**.
 - **Mac:** bookmark it.
 
-Then **stop the app on your Mac** (Ctrl+C), so the two copies don't both sort mail and use your
-OpenRouter credit twice.
+Then **stop the app on your Mac** (Ctrl+C where `python -m app` runs). Otherwise both copies sync and
+sort mail, and you pay OpenRouter twice.
 
-The VM starts with a fresh database. It sorts the last 14 days again, which costs about 16 AI calls,
-a fraction of a cent. Add your sender rules again on the VM.
-
-## Everyday commands (in the VM's SSH window)
+## Everyday commands (on your Mac)
 
 ```
-cd ~/dashboard-for-all-gmails
-journalctl -u inbox -f                     # live log (Ctrl+C to stop watching)
-sudo systemctl restart inbox               # restart the app
-git pull && .venv/bin/pip install -q -r requirements.txt && sudo systemctl restart inbox   # update
-.venv/bin/python -m app.cli check          # test the mailbox logins
+git pull && bash deploy/push-to-vm.sh       # update the VM to the latest version (keeps settings and mail)
+bash deploy/push-to-vm.sh --settings        # after changing accounts, passwords or the AI key on the Mac
+ssh inbox@inbox 'journalctl -u inbox -f'    # watch the VM's log (Ctrl+C to stop watching)
+ssh inbox@inbox                             # a terminal on the VM (type exit to leave)
 ```
 
 The app starts by itself when the VM boots and restarts itself if it ever crashes.
+
+## If something goes wrong
+
+| Problem | Fix |
+|---|---|
+| `create-vm.sh` says billing isn't on | Link a billing account to the project (the script prints the link), then run it again |
+| `push-to-vm.sh` can't reach `inbox@inbox` | Tailscale app connected? Is **inbox** online on the Machines page? If it shows as `inbox-1`, run `VM=inbox@inbox-1 bash deploy/push-to-vm.sh --all` |
+| ssh says the tailnet policy doesn't permit it | In Tailscale's **Access controls**, keep the default `"ssh"` rule (members may SSH to their own devices) |
+| A mailbox shows ✗ after the push | Run `bash deploy/push-to-vm.sh --settings` again; for Gmail, check the App Password still exists |
+
+**Manual alternative (no Mac):** clone the repo on the VM and run `bash deploy/setup-vm.sh`. It asks
+for the key, accounts and passwords itself.
 
 ## Notes
 
@@ -117,7 +138,7 @@ and make it public. Anyone can then *see* the sign-in page, so it's protected by
 - **sessions** that end after 12 hours, or 30 days if you tick "keep me signed in"
 - **no caching** of pages, so a shared computer's Back button can't show your mail
 
-In the VM's SSH window:
+On the VM (from your Mac: `ssh inbox@inbox`):
 
 ```
 cd ~/dashboard-for-all-gmails

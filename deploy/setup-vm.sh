@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # One-command setup on a fresh Debian/Ubuntu VM (e.g. Google Cloud's free e2-micro).
-# Run it from inside the cloned repo:   bash deploy/setup-vm.sh
+#   bash deploy/setup-vm.sh              interactive: asks for the AI key, accounts, passwords
+#   bash deploy/setup-vm.sh --from-mac   no questions: deploy/push-to-vm.sh sends those from your Mac
 # Safe to run again: every step checks what is already done.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
+FROM_MAC=0; [ "${1:-}" = "--from-mac" ] && FROM_MAC=1
+UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 say "Installing system packages (python, git, curl)"
@@ -30,6 +33,7 @@ say "Installing the app's Python packages"
 say "Settings (.env)"
 [ -f .env ] || cp .env.example .env
 chmod 600 .env
+mkdir -p data && chmod 700 data   # your mail lives here: readable by this user only
 setenv() {  # set KEY=value in .env, replacing an existing line (temp file private from the start)
   ( umask 077
     grep -v "^$1=" .env > .env.tmp || true
@@ -37,50 +41,50 @@ setenv() {  # set KEY=value in .env, replacing an existing line (temp file priva
 }
 setenv PASSWORD_STORE env      # no Keychain on a server: passwords live in .env (chmod 600)
 setenv NOTIFICATIONS 0         # no desktop here to show pop-ups
-if grep -q '^OPENROUTER_API_KEY=sk-or-\.\.\.' .env || ! grep -q '^OPENROUTER_API_KEY=.' .env; then
-  read -rsp "Paste your OpenRouter API key (hidden): " key; echo
-  setenv OPENROUTER_API_KEY "$key"
-fi
+if [ "$FROM_MAC" = 0 ]; then
+  if grep -q '^OPENROUTER_API_KEY=sk-or-\.\.\.' .env || ! grep -q '^OPENROUTER_API_KEY=.' .env; then
+    read -rsp "Paste your OpenRouter API key (hidden): " key; echo
+    setenv OPENROUTER_API_KEY "$key"
+  fi
 
-if [ ! -f accounts.yaml ]; then
-  cp accounts.example.yaml accounts.yaml
-  say "Now list your mailboxes"
-  echo "Opening accounts.yaml in nano. Replace the examples with your accounts"
-  echo "(same content as on your Mac), then save with Ctrl+O, Enter, and exit with Ctrl+X."
-  read -rp "Press Enter to open the editor..." _
-  nano accounts.yaml
-fi
+  if [ ! -f accounts.yaml ]; then
+    cp accounts.example.yaml accounts.yaml
+    say "Now list your mailboxes"
+    echo "Opening accounts.yaml in nano. Replace the examples with your accounts"
+    echo "(same content as on your Mac), then save with Ctrl+O, Enter, and exit with Ctrl+X."
+    read -rp "Press Enter to open the editor..." _
+    nano accounts.yaml
+  fi
 
-say "Saving each mailbox password (App Passwords for Gmail)"
-for email in $(.venv/bin/python - <<'PY'
-from app import config
+  say "Saving each mailbox password (App Passwords for Gmail)"
+  missing=$(.venv/bin/python -c 'from app import config
 for a in config.load_accounts():
-    if not config.get_password(a.email):
-        print(a.email)
-PY
-); do
-  .venv/bin/python -m app.cli set-password "$email"
-done
-.venv/bin/python -m app.cli check
+    if not config.get_password(a.email): print(a.email)')
+  for email in $missing; do
+    .venv/bin/python -m app.cli set-password "$email"
+  done
+  .venv/bin/python -m app.cli check
+fi
 
 say "Installing Tailscale (private access from your phone and Mac)"
 command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
 if ! tailscale status >/dev/null 2>&1; then
   echo "Open the link below and sign in with the SAME account you use on your Mac/iPhone:"
-  sudo tailscale up
+  sudo tailscale up --ssh
 fi
+sudo tailscale set --ssh   # lets your Mac reach this VM with plain `ssh` (deploy/push-to-vm.sh)
 TS_NAME="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
 setenv ALLOWED_HOSTS "$TS_NAME"
 
 say "Running the dashboard as a service (starts on boot, restarts if it crashes)"
-sudo tee /etc/systemd/system/inbox.service >/dev/null <<UNIT
+sudo tee "$UNIT_DIR/inbox.service" >/dev/null <<UNIT
 [Unit]
 Description=Unified inbox dashboard
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=$USER
+User=$(id -un)
 WorkingDirectory=$REPO
 Environment=PYTHONUNBUFFERED=1
 Environment=MALLOC_ARENA_MAX=2

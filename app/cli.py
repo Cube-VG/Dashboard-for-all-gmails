@@ -12,6 +12,8 @@
     python -m app.cli set-login                     turn on the login (password + authenticator code)
     python -m app.cli logout-all                    sign out every device
     python -m app.cli unlock-login                  clear the wrong-password lockout
+    python -m app.cli export-settings | ssh vm ...  send accounts, passwords, AI key to another machine
+    python -m app.cli import-settings               receive them (reads stdin; used by push-to-vm.sh)
 """
 
 import argparse
@@ -155,6 +157,54 @@ def cmd_unlock_login(args):
     print(f"Lockout cleared ({n} failed attempts forgotten).")
 
 
+# Settings that move from the Mac to the VM. Not the login, host or password-store settings:
+# those belong to each machine.
+PORTABLE_ENV = ("OPENROUTER_API_KEY", "AI_MODEL", "AI_FALLBACK_MODEL", "MAX_AI_CALLS_PER_DAY",
+                "SYNC_DAYS_BACK", "MAX_INITIAL_MESSAGES", "SYNC_INTERVAL_MINUTES")
+
+
+def cmd_export_settings(args):
+    import json
+    import os
+    import sys
+
+    if sys.stdout.isatty():
+        raise SystemExit("This prints passwords: pipe it to another machine instead, e.g.\n"
+                         "  python -m app.cli export-settings | ssh inbox@inbox "
+                         "'cd dashboard-for-all-gmails && .venv/bin/python -m app.cli import-settings'")
+    accounts = config.load_accounts(config.ACCOUNTS_FILE)
+    missing = [a.email for a in accounts if not config.get_password(a.email)]
+    if missing:
+        raise SystemExit("No saved password for: " + ", ".join(missing))
+    json.dump({
+        "env": {k: os.environ[k] for k in PORTABLE_ENV if os.environ.get(k)},
+        "passwords": {a.email: config.get_password(a.email) for a in accounts},
+        "accounts_yaml": config.ACCOUNTS_FILE.read_text(),
+    }, sys.stdout)
+
+
+def cmd_import_settings(args):
+    import json
+    import os
+    import sys
+
+    data = json.load(sys.stdin)
+    env = {k: str(v) for k, v in data.get("env", {}).items() if k in PORTABLE_ENV}
+    for key, value in env.items():
+        config._write_env(key, value)
+    if data.get("accounts_yaml"):
+        old = os.umask(0o077)
+        try:
+            config.ACCOUNTS_FILE.write_text(data["accounts_yaml"])
+        finally:
+            os.umask(old)
+        config.ACCOUNTS_FILE.chmod(0o600)  # also when the file was already there
+    stored = {config.set_password(email, pw) for email, pw in data.get("passwords", {}).items()}
+    print(f"Imported {len(data.get('passwords', {}))} mailbox password(s) "
+          f"(stored in {', '.join(sorted(stored)) or 'nothing'}), "
+          f"{len(env)} setting(s) and accounts.yaml.")
+
+
 def cmd_test_ai(args):
     from openai import OpenAI
 
@@ -207,6 +257,10 @@ def main():
     s.set_defaults(func=cmd_set_login)
     sub.add_parser("logout-all", help="sign out every device").set_defaults(func=cmd_logout_all)
     sub.add_parser("unlock-login", help="clear the wrong-password lockout").set_defaults(func=cmd_unlock_login)
+    sub.add_parser("export-settings", help="print accounts, passwords and AI settings as JSON "
+                   "(pipe it to another machine)").set_defaults(func=cmd_export_settings)
+    sub.add_parser("import-settings", help="read settings JSON from stdin (see export-settings)"
+                   ).set_defaults(func=cmd_import_settings)
 
     args = p.parse_args()
     args.func(args)
