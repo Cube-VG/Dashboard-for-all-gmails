@@ -69,3 +69,25 @@ def test_exit_codes_for_push_to_vm(monkeypatch, capsys, stdin, code):
     out = capsys.readouterr()
     assert out.out == ("100.64.0.7\n" if code == 0 else "")
     assert bool(out.err) == (code == 1)
+
+
+def test_expired_vm_says_how_to_renew_its_login_not_to_restart_it():
+    gone = peer("inbox", online=False) | {"Expired": True}
+    ip, problem = find_vm.find_vm(status(gone), "inbox")
+    assert ip is None and "expired" in problem and "Disable key expiry" in problem and "Start" not in problem
+
+
+def test_an_expired_vm_that_still_looks_online_is_not_used():
+    ip, problem = find_vm.find_vm(status(peer("inbox") | {"Expired": True}), "inbox")
+    assert ip is None and "expired" in problem
+
+
+def test_an_expired_old_vm_next_to_a_working_new_one_picks_the_new_one():
+    old = peer("inbox", online=False, ips=("100.64.0.1",)) | {"Expired": True}
+    new = peer("inbox", dns="inbox-1", ips=("100.64.0.2",))
+    assert find_vm.find_vm(status(old, new), "inbox") == ("100.64.0.2", "")
+
+
+def test_offline_vm_mentions_rejoin_as_the_last_resort():
+    _, problem = find_vm.find_vm(status(peer("inbox", online=False)), "inbox")
+    assert "create-vm.sh --rejoin" in problem

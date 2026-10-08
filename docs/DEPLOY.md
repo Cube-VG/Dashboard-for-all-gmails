@@ -4,7 +4,8 @@
 your own Mac and iPhone can open the dashboard. Nothing is exposed to the internet
 (unless you later choose the optional public login at the end of this guide).
 
-**Cost:** $0, as long as you follow the settings marked ⚠️ below. OpenRouter costs the same as now.
+**Cost:** $0, as long as you activate your Google account (step 2.1) and keep the settings marked ⚠️
+below. OpenRouter costs the same as now.
 
 **Why this setup:**
 - **The app is tiny.** A few hundred emails, about 100 MB of RAM and well under 1 GB of disk, so the
@@ -33,6 +34,10 @@ Free-tier terms change. Check [cloud.google.com/free](https://cloud.google.com/f
 1. Sign up at [console.cloud.google.com](https://console.cloud.google.com).
    - Google asks for a card to verify you. The free VM doesn't charge it.
    - Make sure a project is selected at the top (new accounts get "My First Project").
+   - ⚠️ **New accounts start on a 90-day free trial.** Click **Activate** (or **Upgrade**) in the banner
+     at the top of the console. Otherwise Google stops the VM when the trial ends and deletes it, with
+     your mail, 30 days later. The `e2-micro` stays free after activating, and the budget alarm below
+     emails you if anything ever costs money.
 2. On your **Mac**, put the VM script on the clipboard as one line:
    ```
    cd ~/Documents/dashboard-for-all-gmails && git pull
@@ -42,8 +47,7 @@ Free-tier terms change. Check [cloud.google.com/free](https://cloud.google.com/f
    terminal in the browser.
 4. Click inside the Cloud Shell terminal, paste with **Cmd+V** and press **Enter**.
    It must answer **`Saved create-vm.sh (… lines)`** with the number your Mac printed. If it doesn't,
-   the paste didn't arrive:
-   allow pasting if the browser asks, and try again.
+   the paste didn't arrive: allow pasting if the browser asks, and try again.
 5. Run it with your Tailscale key:
    ```
    bash create-vm.sh tskey-auth-PASTE-YOUR-KEY
@@ -56,13 +60,14 @@ The script does all of this:
 
 | Step | |
 |---|---|
-| ⚠️ Free-tier settings | `e2-micro` · `us-central1` · 30 GB **standard** disk · Debian 12 |
+| ⚠️ Free-tier settings | `e2-micro` · a free US zone (it tries the next one if Google has none left) · 30 GB **standard** disk · Debian 12 |
 | Budget alarm | Emails you at the first cent of cost, if Google allows it to be set automatically |
 | Tailscale | Joins the VM to your Tailscale as **inbox** and lets your Mac log in to it |
 | Clean-up | Removes the used key from the VM's settings |
 
 6. When it says **Done**, open [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines).
-   Click **inbox** → **⋯** → **Disable key expiry**, so the VM never drops off your Tailscale.
+   Click the name it printed (usually **inbox**) → **⋯** → **Disable key expiry**, so the VM never
+   drops off your Tailscale.
 
 ## 3. Send everything from your Mac (5 min)
 
@@ -83,7 +88,8 @@ This copies to the VM:
 It then installs and starts the app. Everything goes over Tailscale's encrypted connection, and
 nothing secret is written to a file on your Mac.
 
-- **The first time**, Tailscale may print a link to approve the login. Open it.
+- **At most once every 12 hours**, Tailscale prints a link to approve the login. Open it; the
+  script carries on by itself.
 - **If macOS asks** whether Python may read your Keychain, click **Allow**.
 
 At the end it prints your address, like `https://inbox.tail1234.ts.net/`.
@@ -103,6 +109,9 @@ ssh inbox@inbox 'journalctl -u inbox -f'    # watch the VM's log (Ctrl+C to stop
 ssh inbox@inbox                             # a terminal on the VM (type exit to leave)
 ```
 
+The first time `ssh` asks "Are you sure you want to continue connecting?", type `yes`. If it says it
+can't resolve `inbox`, use the `ssh inbox@100.…` line that `push-to-vm.sh` printed at the end.
+
 The app starts by itself when the VM boots and restarts itself if it ever crashes.
 
 ## If something goes wrong
@@ -112,8 +121,12 @@ The app starts by itself when the VM boots and restarts itself if it ever crashe
 | `bash create-vm.sh …` prints nothing at all | The file is empty because the paste didn't arrive. Redo step 2, points 2–4 |
 | `create-vm.sh` says billing isn't on | Link a billing account to the project (the script prints the link), then run it again |
 | `create-vm.sh` says "No word from the VM" or "couldn't join" | Run it again as it says; for "couldn't join", with a new key |
+| `create-vm.sh` says no free e2-micro is available | Google is out of free VMs in every free zone for now. Wait an hour and run it again |
 | `push-to-vm.sh` says it doesn't have a machine called `inbox` | Step 2 didn't finish with **Done**, or this Mac is signed in to a different Tailscale account. The message lists what your Mac can see |
 | `push-to-vm.sh` says "This Mac can't look up that address" | In the Tailscale menu-bar app's settings, turn on **Use Tailscale DNS settings**; check MagicDNS is on at [admin/dns](https://login.tailscale.com/admin/dns) |
+| `push-to-vm.sh` says inbox's login expired | [admin/machines](https://login.tailscale.com/admin/machines) → inbox → ⋯ → **Temporarily extend key**, then **Disable key expiry** |
+| `push-to-vm.sh` says inbox is offline, even after a Reset | Make a new auth key; in Cloud Shell run `bash create-vm.sh --rejoin tskey-auth-NEW-KEY` |
+| The dashboard stopped about 3 months after setup | The Google free trial ended. Click **Activate** in the console within 30 days, then start the VM: Compute Engine → VM instances → inbox → Start |
 | ssh says the tailnet policy doesn't permit it | In Tailscale's **Access controls**, keep the default `"ssh"` rule (members may SSH to their own devices) |
 | A mailbox shows ✗ after the push | Run `bash deploy/push-to-vm.sh --settings` again; for Gmail, check the App Password still exists |
 
@@ -125,8 +138,9 @@ for the key, accounts and passwords itself.
 - **Gmail may email you "new sign-in from Google Cloud".** That's the VM. App Passwords keep working.
 - **No pop-up notifications on the VM.** It has no screen. Ask for phone push notifications (ntfy)
   if you want them.
-- **Staying free:** 1 VM, `e2-micro`, a US region, a *standard* disk ≤ 30 GB, and under 1 GB of outbound
-  traffic a month. The dashboard over Tailscale uses a few MB. Downloading email doesn't count.
+- **Staying free:** an activated (not trial) account, 1 VM, `e2-micro`, a US region, a *standard* disk
+  ≤ 30 GB, and under 1 GB of outbound traffic a month. The dashboard over Tailscale uses a few MB.
+  Downloading email doesn't count.
 
 ---
 

@@ -23,7 +23,8 @@ def find_vm(status: dict, name: str) -> tuple[str | None, str]:
     peers = [p for p in (status.get("Peer") or {}).values() if isinstance(p, dict)]
     # create-vm.sh names it "inbox"; Tailscale calls a second one "inbox-1" but keeps its HostName
     named = [p for p in peers if (p.get("HostName") or "").lower() == name or _short(p) == name]
-    online = [p for p in named if p.get("Online")]
+    online = [p for p in named if p.get("Online") and not p.get("Expired")]
+    expired = [p for p in named if p.get("Expired")]
 
     if len(online) == 1:
         ips = online[0].get("TailscaleIPs") or []
@@ -35,10 +36,17 @@ def find_vm(status: dict, name: str) -> tuple[str | None, str]:
                             f"    ({_short(p)})" for p in online)
         return None, (f"More than one online machine is called '{name}'. Remove the one you don't use at\n"
                       f"https://login.tailscale.com/admin/machines , or pick one:\n{choices}")
+    if expired:
+        label = _short(expired[0])
+        return None, (f"'{label}' is in your Tailscale but its Tailscale login expired.\n"
+                      f"Open https://login.tailscale.com/admin/machines -> {label} -> ... -> Temporarily extend key,\n"
+                      f"then ... -> Disable key expiry. It reconnects by itself within a minute; then run this again.")
     if named:
         return None, (f"'{name}' is in your Tailscale but offline. If you created it in the last few minutes, wait\n"
                       f"a minute and run this again. Otherwise start it: https://console.cloud.google.com/compute/instances\n"
-                      f"-> {name} -> Start (or Reset if it's already running).")
+                      f"-> {name} -> Start (or Reset if it's already running).\n"
+                      "Still offline 3 minutes later? Make a new auth key and, in Cloud Shell, run:\n"
+                      "  bash create-vm.sh --rejoin tskey-auth-NEW-KEY")
 
     me = status.get("Self") or {}
     login = ((status.get("User") or {}).get(str(me.get("UserID"))) or {}).get("LoginName")

@@ -42,7 +42,7 @@ fi
 echo "VM: $VM"
 
 say "Connecting to $VM over Tailscale"
-echo "(the first time, Tailscale may print a link to approve this login: open it)"
+echo "(at most once every 12 hours, Tailscale prints a link to approve this login: open it, and it carries on)"
 run true || {
   echo "Can't reach $VM. Check that the Tailscale app on this Mac is connected and that"
   echo "'$VM_NAME' shows as online at https://login.tailscale.com/admin/machines"
