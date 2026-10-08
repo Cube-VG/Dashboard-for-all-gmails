@@ -27,6 +27,109 @@
   // iOS Safari only shows :active press states when a touch listener exists.
   document.addEventListener("touchstart", () => {}, { passive: true });
 
+  // --- motion: springs and drags (Apple's damping / response model) ------------------------
+  // A spring moves a value toward its target from wherever it is now, keeping its speed, so a
+  // motion can be grabbed or reversed mid-flight. response: seconds to arrive; damping 1 = no bounce.
+  function spring(paint, { response = 0.4, damping = 1 } = {}) {
+    const s = { value: 0, velocity: 0, target: 0 };
+    let raf = 0, last = 0, onRest = null;
+    const frame = (now) => {
+      const dt = Math.min(0.064, last ? (now - last) / 1000 : 1 / 60);
+      last = now;
+      const k = (2 * Math.PI / response) ** 2, c = 4 * Math.PI * damping / response;
+      for (let t = 0; t < dt; t += 1 / 240) {
+        const h = Math.min(1 / 240, dt - t);
+        s.velocity += (-k * (s.value - s.target) - c * s.velocity) * h;
+        s.value += s.velocity * h;
+      }
+      if (Math.abs(s.value - s.target) < 0.0005 && Math.abs(s.velocity) < 0.02) {
+        s.value = s.target; s.velocity = 0; raf = 0;
+        paint(s.value);
+        const done = onRest; onRest = null; done?.();
+        return;
+      }
+      paint(s.value);
+      raf = requestAnimationFrame(frame);
+    };
+    // animate to `target`; `velocity` (units per second) hands over the finger's speed
+    s.to = (target, { velocity, rest = null } = {}) => {
+      s.target = target;
+      if (velocity !== undefined && Number.isFinite(velocity)) s.velocity = velocity;
+      onRest = rest; // only the latest motion's callback runs: a reversed motion never "finishes"
+      if (!raf) { last = 0; raf = requestAnimationFrame(frame); }
+    };
+    // jump there now (a finger is holding it, or motion is reduced)
+    s.set = (value) => {
+      cancelAnimationFrame(raf); raf = 0; onRest = null;
+      s.value = s.target = value; s.velocity = 0;
+      paint(value);
+    };
+    s.moving = () => raf !== 0;
+    return s;
+  }
+  // where a flick would come to rest (Apple's scroll deceleration), in px
+  const projection = (v, rate = 0.998) => (v / 1000) * rate / (1 - rate);
+  // past an edge things follow less and less, never stop dead
+  const rubberband = (over, size, c = 0.55) => (over * size * c) / (size + c * Math.abs(over));
+  // Follow a finger along one axis: ~10px of slack before committing (so taps and scrolls win),
+  // then 1:1, and the speed at release. A drag never also counts as a tap on what it started on.
+  let dragEndedAt = -Infinity;
+  function drag({ axis = "x", grab, start, move, end }) {
+    document.addEventListener("pointerdown", (e) => {
+      if (!e.isPrimary || e.button !== 0) return;
+      const el = grab(e);
+      if (!el) return;
+      const x0 = e.clientX, y0 = e.clientY;
+      let live = false;
+      const samples = [];
+      const delta = (ev) => (axis === "x" ? ev.clientX - x0 : ev.clientY - y0);
+      const onMove = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        const d = delta(ev), other = axis === "x" ? ev.clientY - y0 : ev.clientX - x0;
+        if (!live) {
+          if (Math.abs(d) < 10 && Math.abs(other) < 10) return;
+          if (Math.abs(d) <= Math.abs(other) || start(d, el) === false) { stop(); return; } // scrolling won
+          live = true;
+          el.classList.add("dragging");
+          try { el.setPointerCapture(e.pointerId); } catch { /* the pointer already left */ }
+        }
+        samples.push([ev.timeStamp, d]);
+        if (samples.length > 8) samples.shift();
+        move(d, el);
+      };
+      const onUp = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        stop();
+        if (!live) return;
+        el.classList.remove("dragging");
+        dragEndedAt = performance.now();
+        const lastS = samples[samples.length - 1] || [ev.timeStamp, delta(ev)];
+        const firstS = samples.find((s) => lastS[0] - s[0] <= 80) || lastS; // speed over the last 80ms
+        const held = ev.timeStamp - lastS[0] > 80; // the finger stopped before letting go
+        const v = !held && lastS[0] > firstS[0] ? (lastS[1] - firstS[1]) / ((lastS[0] - firstS[0]) / 1000) : 0;
+        end(lastS[1], ev.type === "pointercancel" ? 0 : v, el);
+      };
+      function stop() {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      }
+      window.addEventListener("pointermove", onMove, { passive: true });
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (performance.now() - dragEndedAt < 350) { e.preventDefault(); e.stopPropagation(); dragEndedAt = -Infinity; }
+  }, true);
+  // run a DOM change as a morph (minimise / maximise, theme) where the browser can
+  function morph(update) {
+    if (document.startViewTransition && !reduceMotion.matches) {
+      try { document.startViewTransition(update); return; } catch { /* fall through */ }
+    }
+    update();
+  }
+
   // --- display preferences (⋯ menu and shortcut sheet switches) -------------------------
   const SWITCHES = {
     density: { get: () => root.dataset.density === "compact",
@@ -52,7 +155,7 @@
     $('meta[name="color-scheme"]')?.setAttribute("content", theme === "auto" ? "light dark" : theme);
   }
   document.addEventListener("change", (e) => {
-    if (e.target.matches?.('input[name="theme"]')) setTheme(e.target.value);
+    if (e.target.matches?.('input[name="theme"]')) { const v = e.target.value; morph(() => setTheme(v)); } // a soft cross-fade, no flash
   });
   function syncSwitches() {
     $$("[data-prefs]").forEach((el) => { el.hidden = false; });
@@ -107,6 +210,39 @@
       d._y = window.scrollY;
     }
   }, true);
+
+  // --- disclosures (Categories, panels, quoted text, Sent rows): grow and shrink on a spring --
+  const SPRING = getComputedStyle(root).getPropertyValue("--spring").trim() || "cubic-bezier(0.32, 0.72, 0, 1)";
+  function toggleDetails(d) {
+    const opening = !d.open || d.classList.contains("shutting");
+    const from = d.getBoundingClientRect().height; // mid-animation: from where it is now
+    d._anim?.cancel();
+    d.classList.remove("shutting");
+    d.open = true;
+    const full = d.getBoundingClientRect().height;
+    d.open = false;
+    const shut = d.getBoundingClientRect().height;
+    d.open = true;
+    if (!opening) d.classList.add("shutting");
+    const to = opening ? full : shut;
+    d.style.overflow = "hidden";
+    const anim = d.animate([{ height: from + "px" }, { height: to + "px" }],
+      { duration: opening ? 480 : 360, easing: SPRING });
+    d._anim = anim;
+    anim.onfinish = () => {
+      d._anim = null;
+      d.style.overflow = "";
+      if (d.classList.contains("shutting")) { d.classList.remove("shutting"); d.open = false; }
+    };
+  }
+  document.addEventListener("click", (e) => {
+    const s = e.target.closest("details > summary");
+    const d = s?.parentElement;
+    if (!d || e.defaultPrevented || reduceMotion.matches || d.matches(".menu-wrap") || !d.animate) return;
+    if (e.target.closest("a, button, input, select, textarea, label") && e.target.closest("a, button, input, select, textarea, label") !== s) return;
+    e.preventDefault();
+    toggleDetails(d);
+  });
 
   // --- shortcut sheet (popover; works without JS in Safari 17+) ----------------------------
   const sheet = () => $("#keys");
@@ -330,7 +466,7 @@
     const state = captureState();
     const apply = () => {
       // a reply being written in the pane survives the re-render (same email still open)
-      const keepPane = $("#pane [data-compose]") ? $("#pane") : null;
+      const keepPane = $("#pane [data-compose]:not(.leaving)") ? $("#pane") : null;
       const drawerOpen = $("#sidebar")?.classList.contains("open");
       const active = document.activeElement;
       const sel = active && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
@@ -345,7 +481,7 @@
           window.scrollTo({ top: winY });
         }
       }
-      if (drawerOpen) $("#sidebar")?.classList.add("open");
+      if (drawerOpen) { $("#sidebar")?.classList.add("open"); if (drawerSpring.moving()) paintDrawer(drawerSpring.value); }
       restoreState(state, focusSubject);
       if (moved) { const c = cardEl(moved); if (c) c.style.viewTransitionName = "moved-card"; }
       if (swapPane) { const pane = $("#pane"); pane?.classList.add("swap"); setTimeout(() => pane?.classList.remove("swap"), 200); }
@@ -373,9 +509,9 @@
   }
   // phone: the email sheet covers the page, so hide the page from focus and VoiceOver
   function syncModal() {
-    const win = $("#compose-dock .compose-window:not(.minimized)");
+    const win = $("#compose-dock .compose-window:not(.minimized):not(.leaving)");
     const covered = phone.matches && (paneOpen() || !!win); // full-screen email or compose
-    const drawer = !!$("#sidebar.open");
+    const drawer = drawerOpen();
     for (const el of [$(".skip"), $(".top"), $(".fab")]) if (el) el.inert = covered || drawer;
     const side = $("#sidebar");
     if (side) side.inert = covered && !drawer;
@@ -397,6 +533,36 @@
     u.searchParams.set("open", id);
     return u.href;
   }
+  // phones: swipe the email to the right to go back to the list (anywhere on it, like iOS)
+  let paneFrom = 1;
+  const scrollsSideways = (el, stop) => {
+    for (let n = el; n && n !== stop; n = n.parentElement) {
+      if (n.scrollWidth > n.clientWidth + 1 && /auto|scroll/.test(getComputedStyle(n).overflowX)) return true;
+    }
+    return false;
+  };
+  drag({
+    axis: "x",
+    grab: (e) => {
+      const pane = $("#pane");
+      if (!pushes() || !paneOpen() || !pane?.contains(e.target)) return null;
+      if (e.target.closest("input, textarea, select, [contenteditable], form[data-compose]")) return null;
+      if (String(window.getSelection?.() || "") || scrollsSideways(e.target, pane)) return null;
+      return pane;
+    },
+    start: (d) => {
+      if (d <= 0) return false; // only to the right
+      paneFrom = paneSpring.moving() ? paneSpring.value : 1;
+      paneSpring.set(paneFrom);
+    },
+    move: (d) => paneSpring.set(Math.min(1, paneFrom - d / innerWidth)),
+    end: (d, v) => {
+      const at = Math.min(1, paneFrom - d / innerWidth);
+      const vel = -v / innerWidth;
+      if (at - projection(v) / innerWidth < 0.5) closePane(closeHref(), { velocity: vel });
+      else paneSpring.to(1, { velocity: vel, rest: settlePane });
+    },
+  });
   function closeHref() {
     const c = $("#pane a[data-close]");
     if (c) return c.href;
@@ -426,6 +592,29 @@
   }
 
   let closeTimer = 0;
+  // phones: the email slides in over the list like an iOS push (the list drifts left beneath
+  // it) and slides back out on Back or when swiped to the right. 0 = list, 1 = email.
+  const pushes = () => phone.matches && !reduceMotion.matches;
+  const paneSpring = spring(paintPane, { response: 0.42 });
+  function paintPane(q) {
+    const pane = $("#pane");
+    const board = $("#board");
+    const moving = q > 0.0005 && q < 0.9995;
+    if (pane) {
+      pane.style.transform = moving || q <= 0 ? `translate3d(${((1 - q) * 100).toFixed(3)}%, 0, 0)` : "";
+      pane.classList.toggle("moving", moving);
+    }
+    if (board) {
+      board.style.transform = moving ? `translate3d(${(-q * 28).toFixed(3)}%, 0, 0)` : "";
+      board.classList.toggle("moving", moving);
+    }
+  }
+  function settlePane() {
+    const pane = $("#pane");
+    const board = $("#board");
+    if (pane) { pane.style.transform = ""; pane.classList.remove("moving"); }
+    if (board) { board.style.transform = ""; board.classList.remove("moving"); }
+  }
   async function openMessage(id, href, { push = true, focus = false } = {}) {
     const pane = $("#pane");
     const layout = $("#layout");
@@ -453,9 +642,14 @@
       void pane.offsetWidth;
       pane.classList.add("swap");
       setTimeout(() => pane.classList.remove("swap"), 200);
+    } else if (pushes()) {
+      // from off-screen, or from wherever a closing email was caught
+      if (!layout.classList.contains("with-pane")) paneSpring.set(0);
+      layout.classList.add("with-pane");
+      paneSpring.to(1, { rest: settlePane });
     } else {
       layout.classList.add("pane-enter", "with-pane");
-      setTimeout(() => layout.classList.remove("pane-enter"), 500);
+      setTimeout(() => layout.classList.remove("pane-enter"), 600);
     }
     markActive(id);
     const wasUnread = showAsRead(id);
@@ -510,7 +704,7 @@
   }
 
   let listY = 0;
-  function closePane(href, { push = true, focusBack = true } = {}) {
+  function closePane(href, { push = true, focusBack = true, velocity } = {}) {
     const pane = $("#pane");
     const layout = $("#layout");
     if (push && href) history.pushState(null, "", href);
@@ -523,10 +717,19 @@
     const done = () => {
       layout.classList.remove("with-pane", "pane-out");
       pane.replaceChildren();
+      settlePane();
       syncModal();
     };
-    if (covering) { done(); window.scrollTo({ top: listY }); } // back to the list where you left it
-    else closeTimer = setTimeout(done, reduceMotion.matches ? 150 : desktop.matches ? 220 : 280);
+    if (covering) {
+      // the list comes back where you left it, easing in
+      if (!reduceMotion.matches) { layout.classList.add("board-enter"); setTimeout(() => layout.classList.remove("board-enter"), 600); }
+      done();
+      window.scrollTo({ top: listY });
+    } else if (pushes()) {
+      // opened with the page (no spring ran yet): it starts from fully open; a swipe hands over its speed
+      if (!paneSpring.moving() && velocity === undefined) paneSpring.set(1);
+      paneSpring.to(0, { velocity, rest: done });
+    } else closeTimer = setTimeout(done, reduceMotion.matches ? 150 : 220);
     syncModal(); // before focusBack: an inert card link can't take focus
     markActive(null);
     if (focusBack && id) {
@@ -883,7 +1086,7 @@
       }
       return;
     }
-    if ($("#sidebar.open")) { e.preventDefault(); closeDrawer(); return; }
+    if (drawerOpen()) { e.preventDefault(); closeDrawer(); return; }
     const cw = (t.closest && t.closest(".compose-window")) || (t === document.body ? composeWindow() : null);
     if (cw) { e.preventDefault(); closeWindowKeepingDraft(cw); return; }
     // first Esc leaves a pane field, the next one closes the pane (Mail)
@@ -964,6 +1167,12 @@
     if (dock) {
       if (y < 120 || dy < -6) dock.classList.remove("is-hidden");
       else if (dy > 6) dock.classList.add("is-hidden");
+    }
+    // phones: like Gmail, the Compose button tucks into an icon while you scroll down the list
+    const fab = $(".fab");
+    if (fab) {
+      if (y < 120 || dy < -6) fab.classList.remove("compact");
+      else if (dy > 6) fab.classList.add("compact");
     }
     if (Math.abs(dy) > 6 || y < 120) lastY = y;
     const st = $("details.status-wrap[open]:not(.closing)");
@@ -1104,27 +1313,86 @@
 
 
   // --- sidebar: rail on desktop, drawer on tablets and phones --------------------------------
+  // The drawer slides in on a spring (phones) or grows out of the rail (tablets), and follows a
+  // finger dragging it shut. `.open` = on screen (also while closing); drawerOpen() = open for real.
   const wide = media("(min-width: 1024px)");
-  const drawerOpen = () => !!$("#sidebar.open");
+  let drawerIsOpen = false;
+  const drawerOpen = () => drawerIsOpen;
+  const drawerSpring = spring(paintDrawer, { response: 0.38 });
+  function paintDrawer(p) {
+    const side = $("#sidebar");
+    const scrim = $(".scrim");
+    if (!side || reduceMotion.matches) return;
+    const q = Math.max(0, Math.min(1, p));
+    const moving = q > 0 && q < 1;
+    side.classList.toggle("moving", moving);
+    if (phone.matches) {
+      side.style.clipPath = "";
+      side.style.transform = q >= 1 ? "" : `translate3d(${((q - 1) * 100).toFixed(3)}%, 0, 0)`;
+    } else {
+      // the rail is the drawer's left edge: reveal the rest (and its shadow) to the right of it
+      side.style.transform = "";
+      side.style.clipPath = q >= 1 ? "" : `inset(-24px calc(${(1 - q).toFixed(4)} * (100% - var(--rail-w)) - ${(24 * q).toFixed(2)}px) -24px 0)`;
+    }
+    if (scrim) scrim.style.opacity = q >= 1 ? "" : String(q);
+  }
+  function settleDrawer() {
+    const side = $("#sidebar");
+    const scrim = $(".scrim");
+    if (!drawerIsOpen) {
+      side?.classList.remove("open");
+      scrim?.setAttribute("hidden", "");
+    }
+    if (side) { side.style.transform = ""; side.style.clipPath = ""; side.classList.remove("moving"); }
+    if (scrim) scrim.style.opacity = "";
+  }
   function openDrawer() {
     const side = $("#sidebar");
     if (!side) return;
-    side.classList.add("open");
+    drawerIsOpen = true;
+    if (!side.classList.contains("open")) { drawerSpring.set(0); side.classList.add("open"); paintDrawer(0); }
     $(".scrim")?.removeAttribute("hidden");
     $("[data-drawer]")?.setAttribute("aria-expanded", "true");
     syncModal();
     $(".nav-item[aria-current], .compose-btn", side)?.focus({ preventScroll: true });
+    if (reduceMotion.matches) { drawerSpring.set(1); settleDrawer(); }
+    else drawerSpring.to(1, { rest: settleDrawer });
   }
-  function closeDrawer() {
+  function closeDrawer({ instant = false, velocity } = {}) {
     const side = $("#sidebar");
     if (!side?.classList.contains("open")) return;
-    const had = side.contains(document.activeElement);
-    side.classList.remove("open");
-    $(".scrim")?.setAttribute("hidden", "");
+    const wasOpen = drawerIsOpen;
+    drawerIsOpen = false;
     $("[data-drawer]")?.setAttribute("aria-expanded", "false");
     syncModal();
-    if (had || document.activeElement === document.body) $("[data-drawer]")?.focus({ preventScroll: true });
+    if (wasOpen && (side.contains(document.activeElement) || document.activeElement === document.body)) {
+      $("[data-drawer]")?.focus({ preventScroll: true });
+    }
+    if (instant || reduceMotion.matches) { drawerSpring.set(0); settleDrawer(); }
+    else drawerSpring.to(0, { velocity, rest: settleDrawer });
   }
+  // drag the drawer (or the dimmed page beside it) to the left to close it
+  let drawerW = 300, drawerFrom = 1;
+  drag({
+    axis: "x",
+    grab: (e) => (drawerIsOpen && !wide.matches && !reduceMotion.matches
+      ? e.target.closest?.("#sidebar.open, .scrim:not([hidden])") : null),
+    start: () => {
+      drawerW = $("#sidebar")?.getBoundingClientRect().width || 300;
+      drawerFrom = drawerSpring.value; // caught mid-flight: it moves on from there
+      drawerSpring.set(drawerFrom);
+    },
+    move: (d) => {
+      const p = drawerFrom + d / drawerW;
+      drawerSpring.set(p <= 1 ? p : 1 + rubberband(p - 1, 1) * 0.1);
+    },
+    end: (d, v) => {
+      const at = Math.min(1, drawerFrom + d / drawerW);
+      const vel = v / drawerW;
+      if (at + projection(v) / drawerW < 0.5) closeDrawer({ velocity: vel });
+      else drawerSpring.to(1, { velocity: vel, rest: settleDrawer });
+    },
+  });
   document.addEventListener("click", (e) => {
     if (e.target.closest("[data-drawer]")) {
       if (wide.matches) {
@@ -1136,11 +1404,22 @@
     }
     if (e.target.closest("[data-drawer-close]") || (drawerOpen() && e.target.closest("#sidebar a"))) closeDrawer();
   });
-  wide.addEventListener?.("change", closeDrawer);
+  wide.addEventListener?.("change", () => closeDrawer({ instant: true }));
+  phone.addEventListener?.("change", () => { if (drawerIsOpen) { drawerSpring.set(1); settleDrawer(); } });
 
   // --- compose: floating window (new mail), inline under an email (replies), full page --------
   const UNDO_FALLBACK = 10;
-  const composeWindow = () => $("#compose-dock .compose-window");
+  const composeWindow = () => $("#compose-dock .compose-window:not(.leaving)");
+  // a compose box leaves the way it came (down, or back into the page) before it's removed
+  function leave(el) {
+    if (!el?.isConnected) return;
+    if (reduceMotion.matches && !el.classList.contains("compose-window")) { el.remove(); return; }
+    el.classList.remove("dragging");
+    el.style.transform = ""; // a dragged sheet leaves from where the finger let go
+    el.classList.add("leaving");
+    el.inert = true;
+    setTimeout(() => el.remove(), reduceMotion.matches ? 160 : 340);
+  }
   const draftKey = (form) => form?.dataset.draftKey || "";
   const fieldsOf = (form) => ({
     to: form.elements.to?.value || "", cc: form.elements.cc?.value || "", bcc: form.elements.bcc?.value || "",
@@ -1252,7 +1531,7 @@
   async function openReply(link) {
     const slot = link.closest(".detail")?.querySelector("[data-reply-slot]");
     if (!slot) { location.href = link.href; return; }
-    const current = $("[data-compose]", slot);
+    const current = $("[data-compose]:not(.leaving)", slot);
     if (current && current.dataset.mode === link.dataset.reply) { focusCompose(current); return; }
     if (current && fieldsOf(current).body.trim()) {
       if (!confirm("Discard the reply you're writing?")) return;
@@ -1274,7 +1553,7 @@
     form.dataset.sent = form.dataset.sent || "closed";
     clearTimeout(form._saveTimer);
     const win = form.classList.contains("compose-window");
-    form.remove();
+    leave(form);
     if (win && history.state?.compose === 1) history.back();
     syncModal();
   }
@@ -1284,6 +1563,18 @@
     closeCompose(form);
     if (had) toast("Draft saved on this device", { kind: "info" });
   }
+  let sheetH = 600;
+  drag({
+    axis: "y",
+    grab: (e) => (phone.matches && !reduceMotion.matches && !e.target.closest("button")
+      ? e.target.closest(".compose-window:not(.minimized):not(.leaving) .compose-head")?.closest(".compose-window") : null),
+    start: (d, win) => { if (d <= 0) return false; sheetH = win.getBoundingClientRect().height || innerHeight; },
+    move: (d, win) => { win.style.transform = `translate3d(0, ${d >= 0 ? d : -rubberband(-d, sheetH) * 0.2}px, 0)`; },
+    end: (d, v, win) => {
+      if (Math.max(0, d) + projection(v) > sheetH * 0.3) closeWindowKeepingDraft(win);
+      else win.style.transform = ""; // springs back up (CSS transition from where it is)
+    },
+  });
   function invalid(form, field, message) {
     const el = field && form.elements[field];
     if (el && el.type !== "hidden") {
@@ -1431,9 +1722,9 @@
     if (!form) return;
     if (t.closest("[data-show-cc]")) { showCc(form); form.elements.cc?.focus(); return; }
     if (t.closest("[data-help-toggle]")) { toggleHelp(form); return; }
-    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); return; }
-    if (t.closest("[data-compose-max]")) { form.classList.toggle("maximized"); form.classList.remove("minimized"); return; }
-    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); syncModal(); focusCompose(form); return; }
+    if (t.closest("[data-compose-min]")) { morph(() => { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); }); return; }
+    if (t.closest("[data-compose-max]")) { morph(() => { form.classList.toggle("maximized"); form.classList.remove("minimized"); }); return; }
+    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { morph(() => { form.classList.remove("minimized"); syncModal(); }); focusCompose(form); return; }
     if (t.closest("[data-compose-close]")) { closeWindowKeepingDraft(form); return; }
     if (t.closest("[data-compose-discard]")) {
       e.preventDefault();
@@ -1448,7 +1739,7 @@
   // phone: Back closes the full-screen compose (the draft is kept), like Gmail's app
   window.addEventListener("popstate", () => {
     const win = composeWindow();
-    if (win && history.state?.compose !== 1) { saveDraft(win); win.dataset.sent = "closed"; win.remove(); syncModal(); }
+    if (win && history.state?.compose !== 1) { saveDraft(win); win.dataset.sent = "closed"; leave(win); syncModal(); }
   });
   // leaving the page keeps what was typed in the last moment
   window.addEventListener("pagehide", () => $$("form[data-compose]").forEach(saveDraft));

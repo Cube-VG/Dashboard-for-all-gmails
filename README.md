@@ -90,6 +90,10 @@ In the dashboard (laid out like Gmail, so there's nothing new to learn):
   right, and more. Your choices are remembered.
 - *Rules for this sender*: **VIP** (always important), **Always low**, or
   **Private** (never sent to the AI). Manage them all under **Sender rules**.
+- **Feels like an iPhone app:** everything moves on springs and can be caught mid-motion.
+  On a phone, swipe an open email to the right to go back, drag the menu to the left to
+  close it, and pull a new message down by its title bar to put it away (the draft is kept).
+  With *Reduce Motion* turned on in your phone's settings, things fade instead of sliding.
 
 Gmail's keyboard shortcuts work too (press **?** for the list): **c** compose, **r** reply,
 **a** reply all, **f** forward, **j / k** older / newer, **u** back to the list, **/** search,

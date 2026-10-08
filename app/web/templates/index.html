@@ -96,6 +96,7 @@
         <span class="q-glyph{% if t.key == 'unsorted' %} q-none{% endif %}"><svg class="ic" aria-hidden="true"><use href="#{{ 'i-hourglass' if t.key == 'unsorted' else 'i-q-' ~ t.key }}"/></svg></span>
         <span class="tab-text"><span class="tab-name">{{ t.title }}</span>
           {%- if t.key == 'unsorted' %}<span class="tab-new num">{{ t.total }}<span class="tab-word"> waiting</span></span>{% elif t.unread %}<span class="tab-new num" data-new>{{ t.unread }}<span class="tab-word"> new</span></span>{% elif t.total %}<span class="tab-count num">{{ t.total }}</span>{% endif %}</span>
+        <span class="tab-ind" aria-hidden="true"></span>
       </a>
       {% endfor %}
     </nav>

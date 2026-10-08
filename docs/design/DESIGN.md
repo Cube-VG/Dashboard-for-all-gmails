@@ -263,6 +263,24 @@ Rules:
 
 ## 7. Motion
 
+**Springs (v3).** Motion uses Apple's damping/response spring model. In CSS, `--spring` is a critically damped spring (damping 1, no overshoot) sampled into `linear()`; it settles in `--d-spring` (560ms, response 0.4s) or `--d-spring-fast` (400ms, response 0.28s). In `app.js`, `spring()` integrates the same physics per frame, so the drawer, the phone email view and the compose sheet start from wherever they are, keep their velocity when reversed, and take the finger's speed on release (`projection()` = Apple's deceleration, `rubberband()` past edges). `drag()` follows a finger along one axis after 10px of slack, so taps and vertical scrolling still win.
+
+| Gesture / transition | Behaviour | Reduced motion |
+|---|---|---|
+| Phone drawer | spring slide from the left, scrim follows; drag it (or the scrim) left to close, released by projected position | 150ms fade |
+| Tablet drawer | grows out of the rail (clip-path driven by the same spring) | appears |
+| Phone email | iOS push: slides in from the right, list drifts 28% left beneath; Back or a swipe right anywhere on the email slides it out | fade |
+| Desktop email | rises 12px + fades in; closing eases the list back in | fade |
+| Compose window | rises from the bottom right, leaves the same way; minimise/maximise morph (View Transition) | fade |
+| Phone compose | sheet up from the bottom; drag the title bar down to put it away (draft kept) | fade |
+| Inline reply, Cc/Bcc, Help me write | ease in 8px / 4px | appear |
+| Disclosures (Categories, panels, quoted text, Sent rows) | height spring open and closed, interruptible | instant |
+| Inbox tab underline | glides to the new tab (cross-document View Transition) | crossfade off |
+| Phone Compose button | tucks into an icon while scrolling down, back on scroll up (Gmail) | instant |
+| Rows | highlight on press (after 70ms on touch so scrolling never flashes) | same |
+
+The table below is the earlier baseline; where it differs, the rows above win.
+
 Approximate Apple's critically damped springs with `--ease-out` (fast start, no overshoot). Motion animates **transform and opacity only**; colour/shadow state changes are instant or ≤150ms linear. Use **CSS transitions** (not keyframes) for state changes so a reversal starts from the current value (interruptible); entry states via `@starting-style` (Safari 17.5+; older Safari simply appears without animation). **Paths are symmetric:** everything exits the way it came, using the same curve (a mirrored ease-in would delay visible response >80ms). Nothing bounces.
 
 | Interaction | What moves | In | Out | Reduced motion |
