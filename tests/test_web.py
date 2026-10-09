@@ -438,7 +438,7 @@ def test_a_low_rule_sorts_that_senders_waiting_mail_now(env):
     assert tuple(row) == (1, 1, "rule")
     # the AI reads every VIP email, so a VIP rule leaves waiting mail for the next sync
     r = env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "evil@hack.er"})
-    assert r.json()["message"].endswith("Their waiting mail is sorted as important at the next sync.")
+    assert r.json()["message"].endswith("1 waiting email is sorted at the next sync.")
     assert query(env, "SELECT scored_by FROM messages WHERE from_email = 'evil@hack.er'")[0][0] is None
 
 
@@ -462,7 +462,7 @@ def test_a_mangled_email_link_gets_the_friendly_page(env):
 
 def test_rule_copy_and_removable_rule_chips(env):
     r = env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "boss@corp.com"})
-    assert r.json()["message"].endswith("Their waiting mail is sorted as important at the next sync.")
+    assert r.json()["message"].endswith("It applies to their new mail from now on.")
     rule_id = query(env, "SELECT id FROM rules WHERE pattern = 'boss@corp.com'")[0][0]
     detail = env.client.get(f"/message/{env.ids['Contract needs signature']}").text
     assert 'data-kind="vip" data-pattern="boss@corp.com"' in detail  # lets JS undo the removal

@@ -476,18 +476,21 @@ def _sender_suggestions(conn, f: "Filters") -> list[dict]:
             for r in rows if not ruled(r["email"])][:5]
 
 
-def _sort_waiting(conn, kind: str, pattern: str) -> int:
+def _sort_waiting(conn, kind: str, pattern: str) -> tuple[int, int]:
     """A new rule sorts that sender's waiting mail straight away, as the next sync would.
-    VIP mail still goes to the AI, which reads every VIP email. Returns how many were sorted."""
-    new, rules, n = [{"kind": kind, "pattern": pattern}], db.list_rules(conn), 0
+    VIP mail still goes to the AI, which reads every VIP email.
+    Returns (sorted now, still waiting for the next sync)."""
+    new, rules, done, left = [{"kind": kind, "pattern": pattern}], db.list_rules(conn), 0, 0
     for row in conn.execute("SELECT * FROM messages WHERE scored_by IS NULL").fetchall():
         if sort_rules.matching_rule(row, new, kind) is None:
             continue
         scores = sort_rules.decide(row, rules)
-        if scores is not None:
+        if scores is None:
+            left += 1
+        else:
             db.save_scores(conn, row["id"], scores, "rule")
-            n += 1
-    return n
+            done += 1
+    return done, left
 
 
 def _categories(conn, f: Filters | None = None) -> list[str]:
@@ -902,14 +905,14 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                                    "(@company.com)", next_url, ok=False)
         with connect() as conn:
             db.add_rule(conn, kind, p)
-            sorted_now = _sort_waiting(conn, kind, p)
+            sorted_now, left = _sort_waiting(conn, kind, p)
             conn.commit()
         if sorted_now:
             done = f"Sorted {sorted_now} waiting email{'s' if sorted_now != 1 else ''}."
-        elif kind == "vip":
-            done = "Their waiting mail is sorted as important at the next sync."
+        elif left:
+            done = f"{left} waiting email{'s are' if left != 1 else ' is'} sorted at the next sync."
         else:
-            done = "It also sorts mail that's still waiting."
+            done = "It applies to their new mail from now on."
         return _reply(request, f"Rule saved: {RULE_KINDS[kind]} for {p}. {done}",
                       next_url, kind=kind, pattern=p, sorted=sorted_now)
 

@@ -593,7 +593,7 @@ test.describe('Without JavaScript', () => {
       await press(page.getByRole('button', { name: 'Always important (VIP)' }));
       await expect(page).toHaveURL(at('/?tab=unsorted&open=9'));
       await expect(note(page, 'Rule saved')).toHaveText(
-        'Rule saved: Always important (VIP) for rahul@friends.example. It also sorts mail that\'s still waiting.');
+        'Rule saved: Always important (VIP) for rahul@friends.example. 1 waiting email is sorted at the next sync.');
       const remove = page.getByRole('button', { name: 'Remove rule Always important (VIP) for rahul@friends.example' });
       await expect(remove).toBeVisible();
       await press(remove);
@@ -799,7 +799,7 @@ test.describe('Without JavaScript', () => {
       await press(page.getByRole('button', { name: 'Add rule' }));
       await expect(page).toHaveURL(at('/rules'));
       await expect(note(page, 'Rule saved')).toHaveText(
-        'Rule saved: Always important (VIP) for boss@corp.example. It also sorts mail that\'s still waiting.');
+        'Rule saved: Always important (VIP) for boss@corp.example. It applies to their new mail from now on.');
       const item = page.getByRole('listitem').filter({ hasText: 'boss@corp.example' });
       await expect(item).toContainText('0 emails');
 

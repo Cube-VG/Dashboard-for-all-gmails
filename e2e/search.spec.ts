@@ -796,7 +796,7 @@ test.describe('Not sorted', () => {
       const item = suggestions(page).getByRole('listitem').filter({ hasText: s.email });
       await press(item.getByRole('button', { name: 'Low', exact: true }));
       await expect(snackbar(page)).toContainText(
-        `Rule saved: Always low priority for ${s.email}. It also sorts mail that's still waiting.`);
+        `Rule saved: Always low priority for ${s.email}. Sorted ${s.n} waiting emails.`);
       await expect(snackbar(page).getByRole('button', { name: 'Undo' })).toBeVisible();
       await page.goto('/rules');
       const rule = page.getByRole('listitem').filter({ hasText: s.email });

@@ -666,7 +666,7 @@ test.describe('Rules for this sender', () => {
     await expect(pane(page).getByRole('combobox', { name: 'Apply to' })).toHaveValue('priya@acme.example');
     await press(pane(page).getByRole('button', { name: 'Always important (VIP)', exact: true }));
     await expect(snackbar(page)).toContainText(
-      "Rule saved: Always important (VIP) for priya@acme.example. It also sorts mail that's still waiting.");
+      "Rule saved: Always important (VIP) for priya@acme.example. It applies to their new mail from now on.");
     await expect(undoButton(page)).toBeVisible();
     const active = pane(page).getByRole('list', { name: 'Active rules' });
     await expect(active.getByRole('listitem')).toHaveText(['Always important (VIP) · priya@acme.example']);
@@ -853,7 +853,6 @@ test.describe('Keyboard shortcuts', () => {
     await expect(rowLink(page, CONTRACT)).toHaveAccessibleName(/^Unread: /);
   });
 
-  // APP BUG: e in an open email shows the next email but leaves it unread (it is rendered by a refresh, not opened)
   test('e in an open email marks it read and opens the next one, which is then read too', async ({ page }) => {
     await page.goto('/');
     const p = await idOf(rowLink(page, PAYMENT));
@@ -861,7 +860,8 @@ test.describe('Keyboard shortcuts', () => {
     await page.keyboard.press('Enter');
     await expect(subjectOf(page)).toHaveText(CONTRACT);
     await page.keyboard.press('e');
-    await expect(snackbar(page)).toContainText('Marked as read');
+    // both Do now emails are read now, so the "Do now is clear" moment may take the note's place
+    await expect(snackbar(page)).toContainText(/Marked as read|Do now is clear/);
     await expect(subjectOf(page)).toHaveText(PAYMENT);
     await expect(page).toHaveURL(new RegExp(`\\?open=${p}$`));
     await expect(pane(page).getByRole('button', { name: 'Mark as unread' })).toBeVisible();

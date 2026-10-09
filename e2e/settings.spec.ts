@@ -37,8 +37,10 @@ const VIP = 'Always important (VIP)';
 const LOW = 'Always low priority';
 const PRIVATE = 'Private — never send to AI';
 const BAD_PATTERN = 'Enter a sender address (boss@company.com) or a domain (@company.com)';
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** "Rule saved: …" then what it did with the sender's waiting mail (sorted now, at the next sync, or none). */
 const saved = (kind: string, pattern: string) =>
-  `Rule saved: ${kind} for ${pattern}. It also sorts mail that's still waiting.`;
+  new RegExp(`Rule saved: ${escapeRe(kind)} for ${escapeRe(pattern)}\\. (Sorted \\d+ waiting emails?\\.|\\d+ waiting emails? (is|are) sorted at the next sync\\.|It applies to their new mail from now on\\.)`);
 
 const isTouch = () => !!test.info().project.use.hasTouch;
 
