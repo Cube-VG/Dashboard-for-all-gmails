@@ -573,22 +573,44 @@ def many(tmp_path):
     return TestClient(create_app(conn_factory=lambda: db.connect(path)))
 
 
+def _pager_link(html, label):
+    m = re.search(r'<a class="icon-btn" href="([^"]+)" title="[^"]+" aria-label="%s emails">' % label, html)
+    return m.group(1).replace("&amp;", "&") if m else None
+
+
 def test_lists_show_50_at_a_time_like_gmail(many):
     first = many.get("/", params={"view": "all"}).text
-    assert "1–50 of 120" in first and first.count('class="card row') == 50
-    assert 'href="/?view=all&amp;page=2"' in first and 'aria-label="Newer emails"' not in first
-    second = many.get("/", params={"view": "all", "page": "2"}).text
+    assert "1–50 of 120" in first and first.count('class="card row') == 50 and not _pager_link(first, "Newer")
+    second = many.get(_pager_link(first, "Older")).text
     assert "51–100 of 120" in second and "Mail 051" in second and "Mail 050" not in second
-    assert 'href="/?view=all"' in second and 'href="/?view=all&amp;page=3"' in second  # newer / older
-    last = many.get("/", params={"view": "all", "page": "3"}).text
-    assert "101–120 of 120" in last and last.count('class="card row') == 20 and 'aria-label="Older emails"' not in last
-    assert "101–120 of 120" in many.get("/", params={"view": "all", "page": "99"}).text  # past the end: the last page
-    assert "1–50 of 120" in many.get("/", params={"view": "all", "page": "x"}).text
-    tab = many.get("/", params={"tab": "unsorted", "page": "2"}).text  # inbox tabs page the same way
-    assert "51–100 of 120" in tab and 'href="/?tab=unsorted&amp;page=3"' in tab
-    # opening an email keeps the page; changing what's shown starts again at page 1
-    assert re.search(r'href="/\?view=all&amp;open=\d+&amp;page=2"', second)
-    assert 'href="/?view=all&amp;unread=1"' in second
+    assert _pager_link(second, "Newer") == "/?view=all"  # back to the top
+    third = many.get(_pager_link(second, "Older")).text
+    assert "101–120 of 120" in third and third.count('class="card row') == 20 and not _pager_link(third, "Older")
+    back = many.get(_pager_link(third, "Newer")).text
+    assert "51–100 of 120" in back and "Mail 100" in back
+    assert "1–50 of 120" in many.get("/", params={"view": "all", "after": "99999"}).text  # email gone: the top
+    assert "1–50 of 120" in many.get("/", params={"view": "all", "after": "x"}).text
+    tab = many.get("/", params={"tab": "unsorted"}).text  # inbox tabs page the same way
+    assert "1–50 of 120" in tab and "51–100 of 120" in many.get(_pager_link(tab, "Older")).text
+    # opening an email keeps the page; changing what's shown starts again at the top
+    older = _pager_link(first, "Older")
+    assert re.search(r'href="/\?view=all&amp;open=\d+&amp;after=\d+"', second)
+    assert 'href="/?view=all&amp;unread=1"' in second and "after=" not in re.search(r'href="(/\?view=all&amp;unread=1[^"]*)"', second).group(1)
+    assert older.startswith("/?view=all&after=")
+
+
+def test_reading_a_page_of_unread_mail_never_skips_the_next_page(many, tmp_path):
+    first = many.get("/", params={"view": "all", "unread": "1"}).text
+    ids = [int(i) for i in re.findall(r'class="card row[^"]*" data-id="(\d+)"', first)]
+    assert len(ids) == 50
+    older = _pager_link(first, "Older")
+    path = tmp_path / "many.db"
+    conn = db.connect(path)
+    conn.executemany("UPDATE messages SET is_read = 1 WHERE id = ?", [(i,) for i in ids])  # read them all
+    conn.commit()
+    conn.close()
+    nxt = many.get(older).text
+    assert "Mail 051" in nxt and "Mail 100" in nxt and "1–50 of 70" in nxt  # the next 50, none skipped
 
 
 def test_pages_are_compressed_and_never_cached(many):
@@ -597,7 +619,11 @@ def test_pages_are_compressed_and_never_cached(many):
 
 
 def test_versioned_static_files_are_cached_for_good(many):
-    assert "immutable" in many.get("/static/style.css", params={"v": "123"}).headers["cache-control"]
-    assert "immutable" not in many.get("/static/style.css").headers.get("cache-control", "")
+    v = re.search(r'/static/style\.css\?v=(\d+)', many.get("/").text).group(1)
+    assert "immutable" in many.get("/static/style.css", params={"v": v}).headers["cache-control"]
+    assert many.get("/static/style.css", params={"v": "123"}).headers["cache-control"] == "no-cache"  # not this version
+    assert many.get("/static/style.css").headers["cache-control"] == "no-cache"
+    missing = many.get("/static/nope.css", params={"v": v})
+    assert missing.status_code == 404 and "immutable" not in missing.headers["cache-control"]
     page = many.get("/").text
     assert re.search(r'/static/app\.js\?v=\d+', page) and re.search(r'/static/style\.css\?v=\d+', page)

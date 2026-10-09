@@ -95,7 +95,10 @@ class Filters:
     unread: bool = False
     category: str = ""
     unsorted: bool = False  # ?sorted=no: only mail the AI has not sorted yet
-    page: int = 1  # ?page=N: older mail, 50 at a time
+    # ?after=N / ?before=N: the 50 emails listed after / before email N. Anchored to an email,
+    # not a position, so reading or moving mail on one page never makes the next page skip any.
+    after: int | None = None
+    before: int | None = None
 
     @classmethod
     def from_query(cls, params) -> "Filters":
@@ -109,7 +112,8 @@ class Filters:
             unread=params.get("unread", "") in ("1", "on", "true"),
             category=params.get("category", "").strip(),
             unsorted=params.get("sorted", "") == "no",
-            page=max(1, min(_int(params.get("page")) or 1, 10_000)),
+            after=_int(params.get("after")),
+            before=None if _int(params.get("after")) else _int(params.get("before")),
         )
 
     @property
@@ -118,14 +122,14 @@ class Filters:
 
     def url(self, **changes) -> str:
         """Inbox URL with these filters, overridden by `changes`; empty values are dropped.
-        Changing a filter, tab or view starts again at page 1; opening an email keeps the page."""
-        page = changes.pop("page", None)
-        if page is None:
-            page = self.page if set(changes) <= {"open"} else 1
+        Changing a filter, tab or view starts again at the top; opening an email keeps the page."""
+        keep = set(changes) <= {"open"}
+        after = changes.pop("after", self.after if keep else None)
+        before = changes.pop("before", self.before if keep else None)
         params = {"view": self.view, "tab": self.tab, "account": self.account, "q": self.q,
                   "unread": "1" if self.unread else "", "category": self.category,
                   "sorted": "no" if self.unsorted else "", **changes,
-                  "page": page if page and page > 1 else ""}
+                  "after": after or "", "before": "" if after else (before or "")}
         if params["view"] != "inbox" or params["tab"] == "do":
             params["tab"] = ""
         if params["view"] == "inbox":
@@ -324,23 +328,72 @@ def _card(row) -> dict:
 
 
 def _fetch(conn, where: str, args: list, extra: str = "", extra_args: list = (),
-           limit: int = PAGE_SIZE, offset: int = 0) -> list[dict]:
-    sql = CARD_COLUMNS + FROM + where
-    if extra:
-        sql += (" AND " if where else " WHERE ") + "(" + extra + ")"
-    rows = conn.execute(sql + ORDER + " LIMIT ? OFFSET ?", [*args, *extra_args, limit, offset]).fetchall()
+           limit: int = PAGE_SIZE, order: str = ORDER) -> list[dict]:
+    sql = CARD_COLUMNS + FROM + _and(where, extra)
+    rows = conn.execute(sql + order + " LIMIT ?", [*args, *extra_args, limit]).fetchall()
     return [_card(r) for r in rows]
 
 
-def _pager(f: "Filters", total: int) -> dict:
-    """Which page of a list is shown (past the end shows the last page), Gmail's "51–100 of 312"."""
-    pages = max(1, -(-total // PAGE_SIZE))
-    page = min(f.page, pages)
-    start = (page - 1) * PAGE_SIZE
-    return {"page": page, "pages": pages, "offset": start, "first": start + 1 if total else 0,
-            "last": min(total, start + PAGE_SIZE), "total": total,
-            "newer": f.url(page=page - 1) if page > 1 else None,
-            "older": f.url(page=page + 1) if page < pages else None}
+def _and(where: str, extra: str) -> str:
+    if not extra:
+        return where
+    return where + (" AND " if where else " WHERE ") + "(" + extra + ")"
+
+
+# ORDER as a key (answered last, unsorted last, then priority, newest, id); "after" a key means
+# further down the list. Priority and date sort descending, so their comparisons flip.
+_KEY_COLS = "m.answered_at IS NOT NULL, m.priority_score IS NULL, COALESCE(m.priority_score, 0), m.received_at, m.id"
+_AFTER = ("(k1 > ? OR (k1 = ? AND (k2 > ? OR (k2 = ? AND (k3 < ? OR (k3 = ? AND (k4 < ? OR (k4 = ? AND k5 < ?))))))))")
+_REVERSED = (" ORDER BY m.answered_at IS NOT NULL DESC, m.priority_score IS NULL DESC, m.priority_score ASC,"
+             " m.received_at ASC, m.id ASC")
+
+
+def _beyond(key: tuple, direction: str) -> tuple[str, list]:
+    """SQL for rows after (or before) the row with this sort key."""
+    cols = ["(m.answered_at IS NOT NULL)", "(m.priority_score IS NULL)", "COALESCE(m.priority_score, 0)",
+            "m.received_at", "m.id"]
+    sql = _AFTER
+    if direction == "before":
+        sql = sql.replace(">", "#").replace("<", ">").replace("#", "<")
+    for i, col in enumerate(cols, 1):
+        sql = sql.replace(f"k{i}", col)
+    k1, k2, k3, k4, k5 = key
+    return sql, [k1, k1, k2, k2, k3, k3, k4, k4, k5]
+
+
+def _page_of(conn, f: "Filters", where: str, args: list, extra: str, extra_args: list, total: int):
+    """The 50 cards to show and Gmail's "51–100 of 312" pager for them. A cursor whose email is
+    gone, or that points past either end, shows the first page."""
+    anchor = f.after or f.before
+    key = conn.execute(f"SELECT {_KEY_COLS} FROM messages m WHERE m.id = ?", (anchor,)).fetchone() if anchor else None
+    cards = []
+    if key is not None:
+        cond, cargs = _beyond(tuple(key), "after" if f.after else "before")
+        if f.after:
+            cards = _fetch(conn, where, args, _and_extra(extra, cond), [*extra_args, *cargs])
+        else:
+            cards = _fetch(conn, where, args, _and_extra(extra, cond), [*extra_args, *cargs], order=_REVERSED)[::-1]
+            if len(cards) < PAGE_SIZE:  # close to the top: that's just the first page
+                cards = []
+    first = 1
+    if cards:
+        head = conn.execute(f"SELECT {_KEY_COLS} FROM messages m WHERE m.id = ?", (cards[0]["id"],)).fetchone()
+        cond, cargs = _beyond(tuple(head), "before")
+        first = 1 + conn.execute("SELECT COUNT(*)" + FROM + _and(where, _and_extra(extra, cond)),
+                                 [*args, *extra_args, *cargs]).fetchone()[0]
+    else:
+        cards = _fetch(conn, where, args, extra, extra_args)
+    last = first + len(cards) - 1
+    newer = None
+    if cards and first > 1:
+        newer = f.url(before=cards[0]["id"]) if first - 1 > PAGE_SIZE else f.url(after=None, before=None)
+    return cards, {"first": first if cards else 0, "last": last if cards else 0, "total": total,
+                   "pages": 2 if total > PAGE_SIZE else 1, "newer": newer,
+                   "older": f.url(after=cards[-1]["id"]) if cards and last < total else None}
+
+
+def _and_extra(extra: str, cond: str) -> str:
+    return f"({extra}) AND {cond}" if extra else cond
 
 
 def _counts(conn, where: str = "", args: list = ()) -> tuple[dict, dict]:
@@ -396,15 +449,24 @@ def _tabs(conn, f: Filters) -> tuple[list[dict], list[dict], int]:
                      "unread": None})
     if f.tab == "unsorted":
         total = stats["unscored"]
-        pager = _pager(f, total)
-        cards = _fetch(conn, where, args, "m.importance IS NULL OR m.urgency IS NULL", [], offset=pager["offset"])
+        cards, pager = _page_of(conn, f, where, args, "m.importance IS NULL OR m.urgency IS NULL", [], total)
     else:
         found = sorted(pairs[f.tab])
         cond = " OR ".join("(m.importance = ? AND m.urgency = ?)" for _ in found)
         total = stats["quadrants"][f.tab]
-        pager = _pager(f, total)
-        cards = _fetch(conn, where, args, cond, [v for p in found for v in p], offset=pager["offset"]) if found else []
+        cards, pager = (_page_of(conn, f, where, args, cond, [v for p in found for v in p], total) if found
+                        else ([], {"first": 0, "last": 0, "total": 0, "pages": 1, "newer": None, "older": None}))
     return tabs, cards, total, pager
+
+
+def _sender_suggestions(conn, f: "Filters") -> list[dict]:
+    """Senders with several unsorted emails (all of them, not just this page): sort them in one go."""
+    where, args = f.where()
+    rows = conn.execute(
+        "SELECT lower(m.from_email) AS email, MAX(m.from_name) AS name, COUNT(*) AS n" + FROM
+        + _and(where, "(m.importance IS NULL OR m.urgency IS NULL) AND m.from_email != ''")
+        + " GROUP BY lower(m.from_email) HAVING COUNT(*) > 1 ORDER BY n DESC, email LIMIT 5", args).fetchall()
+    return [{"email": r["email"], "name": r["name"] or r["email"], "n": r["n"]} for r in rows]
 
 
 def _categories(conn, f: Filters | None = None) -> list[str]:
@@ -544,8 +606,9 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(HERE / "templates"), autoescape=True)
+    static_v = _static_version()
     env.globals.update(QUADRANTS=QUADRANTS, ACTIONS=ACTIONS, RULE_KINDS=RULE_KINDS,
-                       static_v=_static_version(), login_on=login_on, totp_on=bool(totp_secret))
+                       static_v=static_v, login_on=login_on, totp_on=bool(totp_secret))
     templates = Jinja2Templates(env=env)
     sync_lock = threading.Lock()
     # one login check at a time: no racing past the lockout or reusing a code in parallel,
@@ -592,9 +655,11 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
         if not path.startswith("/static/"):
             # nothing with email in it is kept by the browser (back button on a shared computer)
             resp.headers.setdefault("Cache-Control", "no-store")
-        elif "v" in request.query_params:
+        elif request.query_params.get("v") == static_v and resp.status_code in (200, 304):
             # ?v= changes with every file change, so a phone never has to ask again
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            resp.headers["Cache-Control"] = "no-cache"
         resp.headers.setdefault("Content-Security-Policy", CSP)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         # same-origin, not no-referrer: under no-referrer browsers send `Origin: null` with
@@ -700,13 +765,14 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             if f.view == "all":
                 where, args = f.where()
                 ctx["total"] = conn.execute("SELECT COUNT(*)" + FROM + where, args).fetchone()[0]
-                ctx["pager"] = _pager(f, ctx["total"])
-                ctx["cards"] = _fetch(conn, where, args, offset=ctx["pager"]["offset"])
+                ctx["cards"], ctx["pager"] = _page_of(conn, f, where, args, "", [], ctx["total"])
                 ctx["unsorted"] = {"total": 0}
             elif f.view == "matrix":
                 ctx["columns"], ctx["unsorted"], ctx["total"] = _matrix(conn, f)
             else:
                 ctx["tabs"], ctx["cards"], ctx["total"], ctx["pager"] = _tabs(conn, f)
+                if f.tab == "unsorted":
+                    ctx["senders"] = _sender_suggestions(conn, f)
                 ctx["unsorted"] = {"total": ctx["stats"]["unscored"] if not f.active else
                                    next((t["total"] for t in ctx["tabs"] if t["key"] == "unsorted"), 0)}
             if open_id is not None:

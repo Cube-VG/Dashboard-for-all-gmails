@@ -110,15 +110,11 @@
       {% endfor %}
     </nav>
     {% if f.tab == "unsorted" and cards %}
-    {% set ns = namespace(rows=[]) %}
-    {% for g in cards|groupby("from_email", default="") %}
-      {% if g.grouper and g.list|length > 1 %}{% set ns.rows = ns.rows + [{"email": g.grouper, "name": g.list[0].sender, "n": g.list|length}] %}{% endif %}
-    {% endfor %}
-    {% if ns.rows %}
+    {% if senders %}
     <div class="senders">
       <h3 class="mini-title">Sort whole senders at once <span class="hint-inline">a rule sorts their mail now and in future, without the AI</span></h3>
       <ul class="sender-rows">
-        {% for s in (ns.rows|sort(attribute="n", reverse=true))[:5] %}
+        {% for s in senders %}
         <li>
           <span class="sender-who"><b>{{ s.name }}</b> <span class="addr">{{ s.email }}</span></span>
           <span class="sender-n num">{{ s.n }}</span>

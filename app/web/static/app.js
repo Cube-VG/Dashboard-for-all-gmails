@@ -461,6 +461,9 @@
       focusInPane: !!(a && $("#pane")?.contains(a)),
       hadFocus: !!(a && a !== document.body),
       navHref: a?.matches?.("a[href]") ? a.getAttribute("href") : null,
+      navTab: a?.closest?.(".tab")?.dataset.tab ?? null,
+      navIn: a?.closest?.("#content, #sidebar")?.id ?? null,
+      navLabel: a?.matches?.("a[href]") ? (a.getAttribute("aria-label") || a.textContent.trim()) : null,
       more: $$("section.col").filter((c) => $(".more-cards[open]:not(.shutting)", c)).map((c) => c.dataset.col),
     };
   }
@@ -487,14 +490,23 @@
   }
   // `nav`: a tab, filter or page was chosen (show it from the top); `html`: the page, already
   // on its way (prefetched on touch); `seq`: skip it if a newer tap came in meanwhile
-  async function doRefresh({ moved = null, focusSubject = false, swapPane = false, nav = false, html = null, seq = 0 } = {}) {
+  // `key`: the page this response is for (Back, or an email opened, while it loaded: don't show
+  // it); `onlyAt`: a quiet re-check that only applies if nothing changed since it started;
+  // `y`: where to scroll a page visited again with Back / Forward
+  async function doRefresh({ moved = null, focusSubject = false, swapPane = false, nav = false, html = null, seq = 0,
+                             key = null, onlyAt = null, spot = null } = {}) {
     let text;
     try { text = await (html || loadPage(location.pathname + location.search)); } catch (err) {
       if (err?.message === "login") { toLogin(); return false; }
       throw err;
     }
     if (seq && seq !== navSeq) return false;
-    shownKey = pageKey();
+    if (onlyAt && location.href !== onlyAt) return false;
+    if (key && pageKey() !== pageKey(key)) {
+      if (nav) navigate(location.href, { push: false }); // show what the address bar says
+      return false;
+    }
+    shownKey = pageKey(key || location.href);
     const doc = new DOMParser().parseFromString(text, "text/html");
     document.title = doc.title;
     const swaps = [];
@@ -519,6 +531,7 @@
       const sel = active && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
       const winY = window.scrollY;
       for (const [now, next] of swaps) now.replaceWith(document.adoptNode(next));
+      syncChrome(doc);
       const newPane = $("#pane");
       if (keepPane && newPane && newPane !== keepPane && newPane.querySelector(".detail")?.dataset.message === keepPane.querySelector(".detail")?.dataset.message) {
         newPane.replaceWith(keepPane);
@@ -530,15 +543,11 @@
       }
       if (drawerOpen) { $("#sidebar")?.classList.add("open"); if (drawerSpring.moving()) paintDrawer(drawerSpring.value); }
       if (nav) {
-        window.scrollTo({ top: 0 });
+        restoreColumns();
+        if (spot) returnTo(spot); else jumpTo(0); // a new list starts at the top; Back returns to where you were
         if (flying) glideTabInd(flying, glideUntil - performance.now());
         if (!reduceMotion.matches) $("#board")?.animate?.([{ opacity: 0.4 }, { opacity: 1 }], { duration: 180, easing: "linear" });
-        // keep focus on what was pressed (its copy in the new page), never drop to <body>
-        const a = document.activeElement;
-        if (!a || a === document.body || !a.isConnected) {
-          const same = state.navHref && $$("a[href]").find((x) => x.getAttribute("href") === state.navHref);
-          (same || $(".tab[aria-current]"))?.focus({ preventScroll: true });
-        }
+        refocusAfterNav(state);
         return;
       }
       restoreState(state, focusSubject);
@@ -617,25 +626,119 @@
     tab.setAttribute("aria-current", "page");
     glideTabInd(from);
   }
-  async function navigate(href, { push = true, from = null } = {}) {
+  let navKey = ""; // the page last asked for (it may still be loading)
+  async function navigate(href, { push = true, from = null, spot = null } = {}) {
     const key = urlKey(href);
     const seq = ++navSeq;
+    navKey = pageKey(key);
     $$("form[data-compose]").forEach(saveDraft);
-    if (push) history.pushState(null, "", key);
+    if (push) {
+      history.replaceState({ ...(history.state || {}), spot: currentSpot() }, ""); // for Back
+      if (key === urlKey(location.href)) history.replaceState(null, "", key); // same page: no extra Back step
+      else history.pushState(null, "", key);
+    }
     if (from) markChosen(from);
     clearTimeout(navWaitTimer);
     navWaitTimer = setTimeout(() => { if (seq === navSeq) root.classList.add("nav-wait"); }, 150); // only if it's slow
     const seen = pageCache.get(key);
-    const fresh = seen && performance.now() - seen.at < SHOW_CACHED_MS;
+    const age = seen ? performance.now() - seen.at : Infinity;
     try {
-      await refresh({ nav: true, html: prefetch(key, SHOW_CACHED_MS), seq });
-      // shown from the half-minute cache: fetch it again and quietly update anything that changed
-      if (fresh && seq === navSeq) { pageCache.delete(key); refresh({ html: prefetch(key), seq }).catch(() => {}); }
-    } catch {
-      if (seq === navSeq) location.href = key; // offline or an error: a normal page load explains it
+      // the network happens here, outside the refresh queue: a slow page never holds up the next tap
+      const text = await prefetch(key, SHOW_CACHED_MS);
+      if (seq !== navSeq) return;
+      await refresh({ nav: true, html: text, seq, key, spot });
+      // shown from a copy fetched a while ago: fetch it again and quietly update anything that changed
+      if (age > 3000 && age < SHOW_CACHED_MS && seq === navSeq) {
+        pageCache.delete(key);
+        const at = location.href;
+        prefetch(key).then((t) => refresh({ html: t, seq, onlyAt: at })).catch(() => {});
+      }
+    } catch (err) {
+      if (seq === navSeq) { if (err?.message === "login") toLogin(); else location.href = key; } // a normal load explains it
     } finally {
       if (seq === navSeq) { clearTimeout(navWaitTimer); root.classList.remove("nav-wait"); }
     }
+  }
+  // the parts of the page outside the swapped areas follow along
+  function syncChrome(doc) {
+    if (doc.body?.dataset.page) document.body.dataset.page = doc.body.dataset.page;
+    const form = $("#filters");
+    const fresh = doc.getElementById("filters");
+    if (form && fresh) { // the search box searches what's shown now
+      $$('input[type="hidden"]', form).forEach((i) => i.remove());
+      [...fresh.querySelectorAll('input[type="hidden"]')].reverse().forEach((i) => form.prepend(document.adoptNode(i)));
+      const q = form.elements.q;
+      const nq = fresh.elements.q;
+      if (q && nq) { q.defaultValue = nq.defaultValue; if (document.activeElement !== q) q.value = nq.defaultValue; }
+    }
+    const nexts = $$('#top input[name="next"]');
+    const newNexts = [...doc.querySelectorAll('#top input[name="next"]')];
+    if (nexts.length === newNexts.length) nexts.forEach((i, n) => { i.value = newNexts[n].value; });
+    const fab = $(".fab");
+    const newFab = doc.querySelector(".fab");
+    if (fab && newFab?.getAttribute("href")) fab.setAttribute("href", newFab.getAttribute("href"));
+  }
+  // where you are in a list: the email at the top of the screen and how far down it sits
+  function currentSpot() {
+    const barBottom = $(".top")?.getBoundingClientRect().bottom ?? 0;
+    const card = window.scrollY > 0 ? visibleCards().find((c) => c.getBoundingClientRect().bottom > barBottom + 1) : null;
+    return { y: window.scrollY, id: card?.dataset.id ?? null, top: card ? card.getBoundingClientRect().top : 0 };
+  }
+  // put that email back in the same place (pixel offsets alone drift: rows not drawn yet only
+  // have an estimated height), settling over a few frames while real heights come in
+  function returnTo(spot) {
+    const card = spot.id ? cardEl(spot.id) : null;
+    if (!card) { jumpTo(spot.y || 0); return; }
+    root.style.scrollBehavior = "auto";
+    let frames = 0;
+    const step = () => {
+      const delta = card.getBoundingClientRect().top - spot.top;
+      if (Math.abs(delta) > 1 && frames++ < 30) {
+        try { window.scrollBy({ top: delta, behavior: "instant" }); } catch { window.scrollBy(0, delta); }
+        requestAnimationFrame(step);
+        return;
+      }
+      root.style.scrollBehavior = "";
+    };
+    step();
+  }
+  function jumpTo(y) {
+    // no 4000px glide from the old position: the browser may apply the scroll a frame later,
+    // so smooth scrolling stays off until then
+    root.style.scrollBehavior = "auto";
+    const to = () => { try { window.scrollTo({ top: y, behavior: "instant" }); } catch { window.scrollTo(0, y); } };
+    to();
+    // rows not drawn yet start with an estimated height, so the page can be too short at first:
+    // keep going back to the spot while the real heights come in (Back to a long list)
+    let frames = 0;
+    const settle = () => {
+      if (Math.abs(window.scrollY - y) > 2 && frames++ < 30) { to(); requestAnimationFrame(settle); return; }
+      root.style.scrollBehavior = "";
+    };
+    requestAnimationFrame(settle);
+  }
+  // keyboard users stay on what they pressed (or the first email), never on <body>
+  function refocusAfterNav(s) {
+    const a = document.activeElement;
+    if (!s.hadFocus || (a && a !== document.body && a.isConnected)) return;
+    const box = s.navIn ? document.getElementById(s.navIn) : null;
+    const links = box ? $$("a[href]", box) : [];
+    const el = (s.navTab && $(`.tab[data-tab="${esc(s.navTab)}"]`))
+      || (s.navHref && links.find((x) => x.getAttribute("href") === s.navHref))
+      || (s.navLabel && links.find((x) => (x.getAttribute("aria-label") || x.textContent.trim()) === s.navLabel))
+      || visibleCards()[0]?.querySelector(".card-link");
+    el?.focus({ preventScroll: true });
+  }
+  // j / k / e past either end of the 50: on to the next (or previous) page, like Gmail
+  const pagerLink = (dir) => $(`.pager a[aria-label="${dir > 0 ? "Older" : "Newer"} emails"]`);
+  async function turnPage(href, which, openIt = paneOpen()) {
+    await navigate(href);
+    const list = visibleCards();
+    const card = which === "first" ? list[0] : list[list.length - 1];
+    const link = card && $(".card-link", card);
+    if (!link) return;
+    if (openIt) openMessage(card.dataset.id, link.href, { focus: true });
+    else link.focus({ preventScroll: true });
   }
   document.addEventListener("click", (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -647,14 +750,14 @@
   // start loading on press; on desktop, also after a short hover
   document.addEventListener("pointerdown", (e) => {
     const a = e.target.closest?.("a[href]");
-    if (inPlace(a)) prefetch(a.href);
+    if (inPlace(a)) prefetch(a.href, SHOW_CACHED_MS);
   }, { passive: true, capture: true });
   let hoverTimer = 0;
   document.addEventListener("pointerover", (e) => {
     if (e.pointerType !== "mouse") return;
     clearTimeout(hoverTimer);
     const a = e.target.closest?.("a[href]");
-    if (inPlace(a)) hoverTimer = setTimeout(() => prefetch(a.href), 80);
+    if (inPlace(a)) hoverTimer = setTimeout(() => prefetch(a.href, SHOW_CACHED_MS), 80);
   }, { passive: true });
   // the inbox swaps in place; anywhere else (Sent, Rules) it's a normal page load
   function go(href) {
@@ -785,6 +888,7 @@
     if (!pane || !layout) { location.href = href; return; }
     const url = new URL(href, location.href);
     const next = encodeURIComponent(url.pathname + url.search);
+    const seq = navSeq; // a tab or filter tapped while this loads wins
     let html;
     try {
       // opening an email marks it read, like any mail app (⇧U marks it unread again)
@@ -792,7 +896,8 @@
         { headers: { "X-Inbox-Open": "1" } });
       if (!res.ok) throw new Error(String(res.status));
       html = await res.text();
-    } catch { location.href = href; return; }
+    } catch { if (seq === navSeq) location.href = href; return; }
+    if (seq !== navSeq || !layout.isConnected) return;
     const wasOpen = layout.classList.contains("with-pane") && !layout.classList.contains("pane-out");
     if (!wasOpen) listY = window.scrollY;
     clearTimeout(closeTimer);
@@ -817,6 +922,7 @@
     }
     markActive(id);
     const wasUnread = showAsRead(id);
+    if (wasUnread || !cardEl(id)) pageCache.clear(); // the server just marked it read: remembered tabs are out of date
     setupNav();
     if (push) history.pushState(null, "", url);
     syncModal();
@@ -910,6 +1016,10 @@
     if (!list.length) return;
     const cur = openId() ?? focusedCardId();
     let i = list.findIndex((c) => c.dataset.id === cur);
+    if (i >= 0 && (dir > 0 ? i === list.length - 1 : i === 0) && pagerLink(dir)) {
+      turnPage(pagerLink(dir).href, dir > 0 ? "first" : "last");
+      return;
+    }
     i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : Math.min(list.length - 1, Math.max(0, i + dir));
     const card = list[i];
     const link = $(".card-link", card);
@@ -953,7 +1063,8 @@
 
   window.addEventListener("popstate", (e) => {
     if (!$("#pane")) return;
-    if (shownKey && pageKey() !== shownKey) { navigate(location.href, { push: false }); return; } // another tab or filter
+    const want = navKey || shownKey;
+    if (want && pageKey() !== want) { navigate(location.href, { push: false, spot: e.state?.spot ?? null }); return; } // another tab or filter
     const id = new URLSearchParams(location.search).get("open");
     if (id) { if (id !== openId() || !paneOpen()) openMessage(id, location.href, { push: false }); }
     // after Safari's own edge swipe-back the email is already gone from view: no second slide
@@ -1142,13 +1253,17 @@
     if (!id) return;
     const prev = scoresOf(id);
     const wasRead = prev ? prev.read === "1" : !value;
-    const nextId = andNext ? neighbourId(id) : null;
+    const list = visibleCards();
+    const lastOnPage = list.length && list[list.length - 1].dataset.id === String(id);
+    const older = andNext && lastOnPage ? pagerLink(1)?.href : null;
+    const nextId = andNext && !older ? neighbourId(id) : null;
     const inPane = paneOpen();
     return act({
       url: `/message/${id}/read`, body: { is_read: value ? "1" : "0" },
       ok: value ? "Marked as read" : "Marked as unread",
       undo: wasRead === value ? null : () => setRead(id, wasRead),
       after: async () => {
+        if (older) { await turnPage(older, "first", inPane); return; }
         if (andNext && inPane) {
           if (nextId) history.pushState(null, "", hrefFor(nextId));
           else closePane(closeHref(), { focusBack: true });
@@ -1205,6 +1320,7 @@
       const params = new URLSearchParams(new FormData(form));
       for (const [key, value] of [...params]) if (!value) params.delete(key);
       const query = params.toString();
+      form.elements.q?.blur(); // the phone keyboard goes away
       go(form.getAttribute("action") + (query ? "?" + query : ""));
       return;
     }
@@ -1244,13 +1360,12 @@
     if (t.matches && t.matches(".search input")) {
       // Esc clears the search and its results (Mail), not just the text in the field
       e.preventDefault();
-      const had = t.defaultValue;
+      const had = new URLSearchParams(location.search).has("q");
       t.value = "";
       t.blur();
       if (had) {
         const u = new URL(location.href);
-        u.searchParams.delete("q");
-        u.searchParams.delete("open");
+        for (const k of ["q", "open", "after", "before"]) u.searchParams.delete(k);
         go(u.pathname + u.search);
       }
       return;
