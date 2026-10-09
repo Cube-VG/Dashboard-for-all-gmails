@@ -759,7 +759,7 @@ test.describe('Not sorted', () => {
       await page.goto('/?tab=unsorted');
       await expect(tabLink(page, 'Not sorted')).toHaveAccessibleName(`Not sorted ${big().unsorted} waiting`);
       await expect(suggestionsTitle(page)).toBeVisible();
-      await expect(suggestionsTitle(page)).toContainText('a rule sorts their mail now and in future, without the AI');
+      await expect(suggestionsTitle(page)).toContainText('a rule sorts their mail now and in future (Low skips the AI)');
       const items = suggestions(page).getByRole('listitem');
       await expect(items).toHaveCount(5);
       for (const [i, s] of want.entries()) {
