@@ -156,6 +156,24 @@ python -m app.cli refresh-bodies   # re-download email text for saved mail (keep
 python -m pytest
 ```
 
+**Browser tests** (Playwright) click through the whole app the way you would: on a desktop,
+an iPhone-sized phone and an iPad-sized tablet, with taps, swipes and keyboard shortcuts.
+They use made-up mail and a pretend mail server, so nothing real is read or sent. Once:
+
+```
+npm install
+npx playwright install chromium
+```
+
+Then `npx playwright test` runs them all (`--project=phone` for one device,
+`npx playwright show-report` to see what failed, with screenshots). Each test file in
+[e2e/](e2e) covers one part of the app; [e2e/server.py](e2e/server.py) is the pretend
+setup they run against.
+
+In Claude Code, the Playwright agents in `.claude/agents` (planner, generator, healer) can
+write and fix these tests for you: ask for a test plan of a feature, tests from the plan, or
+to fix a failing test.
+
 ## License
 
 [MIT](LICENSE): use it, change it and share it freely.

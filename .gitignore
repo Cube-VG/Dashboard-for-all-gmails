@@ -4,3 +4,6 @@ accounts.yaml
 __pycache__/
 .venv/
 data/
+node_modules/
+test-results/
+playwright-report/

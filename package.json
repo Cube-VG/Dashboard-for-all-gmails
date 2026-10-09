@@ -1,0 +1,13 @@
+{
+  "name": "dashboard-for-all-gmails-e2e",
+  "private": true,
+  "description": "Browser tests (Playwright) for the dashboard, on phone, tablet and desktop",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "^22.10.0"
+  }
+}
