@@ -413,8 +413,9 @@ test.describe('Sender rules page without JavaScript', () => {
     await expect(ruleItem(page, PRIVATE, '@bank.example')).toContainText('1 email ·');
     await press(page.getByRole('link', { name: 'Dismiss' })); // the flash stays until dismissed without JS
     await expect(page.getByRole('status')).toHaveCount(0);
+    await page.waitForLoadState('load'); // Dismiss is a link: the page loads again
     // scrolled up into the middle of the screen, as a person would, clear of the floating Compose button
-    await removeButton(page, '@bank.example').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await removeButton(page, '@bank.example').evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await removeButton(page, '@bank.example').click({ timeout: 10_000 });
     await expect(page.getByRole('status')).toContainText('Rule removed');
     await expect(ruleGroup(page, PRIVATE).getByRole('listitem')).toHaveCount(0);
