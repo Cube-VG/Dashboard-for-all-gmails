@@ -19,7 +19,7 @@
 <header class="top" id="top">
   <span class="sync-track" aria-hidden="true"><span class="sync-line"></span></span>
   <button type="button" class="icon-btn menu-btn" data-drawer aria-label="Main menu" aria-controls="sidebar" aria-expanded="false" title="Main menu"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
-  <a class="brand" href="/"><span class="brand-mark"><svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg></span><span class="brand-name">Inbox</span></a>
+  <a class="brand" href="/" aria-label="Inbox"><span class="brand-mark"><svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg></span><span class="brand-name">Inbox</span></a>
   <form id="filters" class="search" method="get" action="/" role="search">
     {# like Gmail, a search is one list of every match: from the Inbox tabs it opens All mail #}
     <input type="hidden" name="view" value="{{ 'matrix' if page == 'matrix' else 'all' }}">

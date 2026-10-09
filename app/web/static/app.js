@@ -313,6 +313,11 @@
   function dismiss(p) {
     if (!p || p.classList.contains("leaving")) return;
     clearTimeout(p._timer);
+    if (p.contains(document.activeElement)) {
+      const back = typeof p._returnTo === "function" ? p._returnTo() : p._returnTo;
+      if (back && back !== document.body && back.isConnected && back.getClientRects().length && !back.closest("[inert]")) back.focus({ preventScroll: true });
+      else if (p.dataset.keep) giveFocusBack(true, null); // "Sending…": back to Compose
+    }
     p.classList.add("leaving");
     setTimeout(() => p.remove(), reduceMotion.matches ? 150 : 220);
     if (pendingMoment && !$("#flash .flash:not(.leaving)")) {
@@ -380,6 +385,7 @@
       p.append(x);
     }
     if (keep) p.dataset.keep = "1";
+    p._returnTo = document.activeElement; // gets focus back if the snackbar goes while focused
     box.append(p);
     const ms = timeout ?? (kind === "err" ? 0 : actions.length ? 8000 : 6000);
     if (ms) arm(p, ms);
@@ -424,10 +430,11 @@
   }
 
   async function post(url, data) {
-    pageCache.clear(); // remembered tabs would show the email before this change
+    forgetPages(); // remembered tabs would show the email before this change
     const body = data instanceof URLSearchParams ? data : new URLSearchParams(data);
     try {
-      const res = await fetch(url, { method: "POST", body, headers: { Accept: "application/json" } });
+      // pages fetched while this was on its way may predate the change: forget them too
+      const res = await fetch(url, { method: "POST", body, headers: { Accept: "application/json" } }).finally(forgetPages);
       if (res.status === 401) { toLogin(); return { ok: false, status: 401, message: "Please sign in again", data: {} }; }
       const json = await res.json().catch(() => ({}));
       const ok = res.ok && json.ok !== false;
@@ -530,7 +537,9 @@
       const active = document.activeElement;
       const sel = active && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
       const winY = window.scrollY;
+      const tabsX = $(".tabs")?.scrollLeft ?? null;
       for (const [now, next] of swaps) now.replaceWith(document.adoptNode(next));
+      showCurrentTab(tabsX);
       syncChrome(doc);
       const newPane = $("#pane");
       if (keepPane && newPane && newPane !== keepPane && newPane.querySelector(".detail")?.dataset.message === keepPane.querySelector(".detail")?.dataset.message) {
@@ -574,6 +583,8 @@
   const pageCache = new Map(); // "/?tab=later" -> { at, text: Promise<string> }
   const SHOW_CACHED_MS = 120000; // shown at once, then refreshed behind it (anything you change clears it)
   let navSeq = 0, shownKey = "", glideUntil = 0, navWaitTimer = 0;
+  let dataGen = 0; // goes up whenever mail changes: copies fetched before then are out of date
+  function forgetPages() { dataGen += 1; pageCache.clear(); }
   const urlKey = (href) => { const u = new URL(href, location.href); return u.pathname + u.search; };
   function pageKey(href = location.href) {
     const u = new URL(href, location.href);
@@ -590,10 +601,10 @@
   function prefetch(href, maxAge = 15000) {
     const key = urlKey(href);
     const hit = pageCache.get(key);
-    if (hit && performance.now() - hit.at < maxAge) return hit.text;
+    if (hit && hit.gen === dataGen && performance.now() - hit.at < maxAge) return hit.text;
     const text = loadPage(key);
     text.catch(() => { if (pageCache.get(key)?.text === text) pageCache.delete(key); });
-    pageCache.set(key, { at: performance.now(), text });
+    pageCache.set(key, { at: performance.now(), text, gen: dataGen });
     if (pageCache.size > 12) pageCache.delete(pageCache.keys().next().value);
     return text;
   }
@@ -616,6 +627,18 @@
       { transform: `translateX(${from.left - to.left}px) scaleX(${from.width / to.width})`, transformOrigin: "left center" },
       { transform: "none", transformOrigin: "left center" },
     ], { duration: Math.max(120, ms), easing: SPRING });
+  }
+  // the tab strip scrolls sideways on a phone: keep it where it was and the chosen tab in view
+  // (sideways only: the page itself never moves)
+  function showCurrentTab(x = null) {
+    const nav = $(".tabs");
+    if (!nav) return;
+    if (x != null) nav.scrollLeft = x;
+    const tab = $(".tab[aria-current]", nav);
+    if (!tab || nav.scrollWidth <= nav.clientWidth) return;
+    const n = nav.getBoundingClientRect(), r = tab.getBoundingClientRect();
+    if (r.left < n.left) nav.scrollLeft += r.left - n.left - 8;
+    else if (r.right > n.right) nav.scrollLeft += r.right - n.right + 8;
   }
   // the tapped tab shows as chosen straight away, before the list arrives
   function markChosen(a) {
@@ -644,8 +667,10 @@
     const age = seen ? performance.now() - seen.at : Infinity;
     try {
       // the network happens here, outside the refresh queue: a slow page never holds up the next tap
-      const text = await prefetch(key, SHOW_CACHED_MS);
+      const gen = dataGen;
+      let text = await prefetch(key, SHOW_CACHED_MS);
       if (seq !== navSeq) return;
+      if (gen !== dataGen) { text = await prefetch(key, 0); if (seq !== navSeq) return; } // mail changed while it loaded
       await refresh({ nav: true, html: text, seq, key, spot });
       // shown from a copy fetched a while ago: fetch it again and quietly update anything that changed
       if (age > 3000 && age < SHOW_CACHED_MS && seq === navSeq) {
@@ -782,7 +807,7 @@
     for (const el of [$(".skip"), $(".top"), $(".fab")]) if (el) el.inert = covered || drawer;
     const side = $("#sidebar");
     if (side) side.inert = covered && !drawer;
-    if ($("#board")) $("#board").inert = covered || drawer;
+    for (const el of $$("#board, #content > .page")) el.inert = covered || drawer; // the inbox list; Sent, Rules, an email's page
     const pane = $("#pane");
     if (pane) pane.inert = (phone.matches && !!win) || drawer;
   }
@@ -812,7 +837,7 @@
     axis: "x",
     grab: (e) => {
       const pane = $("#pane");
-      if (!pushes() || !paneOpen() || !pane?.contains(e.target)) return null;
+      if (!phone.matches || !paneOpen() || !pane?.contains(e.target)) return null; // Reduce Motion: no slide (paintPane), still closes
       if (e.target.closest("input, textarea, select, [contenteditable], form[data-compose]")) return null;
       if (String(window.getSelection?.() || "") || scrollsSideways(e.target, pane)) return null;
       return pane;
@@ -864,6 +889,7 @@
   const pushes = () => phone.matches && !reduceMotion.matches;
   const paneSpring = spring(paintPane, { response: 0.42 });
   function paintPane(q) {
+    if (reduceMotion.matches) return;
     const pane = $("#pane");
     const board = $("#board");
     const moving = q > 0.0005 && q < 0.9995;
@@ -904,7 +930,6 @@
     layout.classList.remove("pane-out");
     pane.innerHTML = html; // rendered by our server; email text is already escaped
     pane.scrollTop = 0;
-    if (boardHidden()) window.scrollTo({ top: 0 });
     lastHTML.content = null; // the DOM no longer matches the last full render
     if (wasOpen) {
       pane.classList.remove("swap");
@@ -920,9 +945,11 @@
       layout.classList.add("pane-enter", "with-pane");
       setTimeout(() => layout.classList.remove("pane-enter"), 600);
     }
+    // the email covers the list (now hidden, so the page got shorter): start at its top
+    if (boardHidden()) { try { window.scrollTo({ top: 0, behavior: "instant" }); } catch { window.scrollTo(0, 0); } }
     markActive(id);
     const wasUnread = showAsRead(id);
-    if (wasUnread || !cardEl(id)) pageCache.clear(); // the server just marked it read: remembered tabs are out of date
+    if (wasUnread || !cardEl(id)) forgetPages(); // the server just marked it read: remembered tabs are out of date
     setupNav();
     if (push) history.pushState(null, "", url);
     syncModal();
@@ -969,7 +996,13 @@
     dec($('.sidebar .nav-item[href="/"] .n'));
     const email = card.dataset.account;
     if (email) dec($$(".sidebar .acct-item").find((a) => a.dataset.email === email)?.querySelector(".n"));
-    dec($(".tabs .tab[aria-current] .tab-new[data-new]"));
+    const tabNew = $(".tabs .tab[aria-current] .tab-new[data-new]");
+    if (tabNew?.firstChild) {
+      const left = parseInt(tabNew.firstChild.textContent, 10) - 1;
+      if (left > 0) tabNew.firstChild.textContent = String(left);
+      else if (+tabNew.dataset.total) tabNew.replaceWith(Object.assign(document.createElement("span"), { className: "tab-count num", textContent: tabNew.dataset.total }));
+      else tabNew.remove();
+    }
     return true;
   }
 
@@ -994,7 +1027,7 @@
       // the list comes back where you left it, easing in
       if (!reduceMotion.matches) { layout.classList.add("board-enter"); setTimeout(() => layout.classList.remove("board-enter"), 600); }
       done();
-      window.scrollTo({ top: listY });
+      jumpTo(listY);
     } else if (instant) {
       paneSpring.set(0);
       done();
@@ -1140,7 +1173,11 @@
         undoFor: (res) => (existed || !res.data.pattern ? null : () => removeRule(res.data.kind, res.data.pattern)) });
       if (form.classList.contains("rule-add")) {
         const input = $(".rule-add input[name=pattern]");
-        if (r.ok) input?.focus();
+        if (r.ok) {
+          const picked = $(`.rule-add input[name=kind][value="${esc(kind || "")}"]`);
+          if (picked) picked.checked = true;
+          input?.focus();
+        }
         else if (input && r.status && r.status < 500) {
           input.setAttribute("aria-invalid", "true");
           input.focus();
@@ -1156,7 +1193,15 @@
       holder?.classList.add("leaving");
       const kind = holder?.dataset.kind;
       const pattern = holder?.dataset.pattern;
-      return act({ url, body, undo: kind && pattern ? () => post("/rules", { kind, pattern, next: "/rules" }) : null });
+      // the re-render takes the focused Remove button away: carry on from the rule next to it
+      const hadFocus = !!holder?.contains(document.activeElement);
+      const near = holder?.nextElementSibling?.dataset.pattern ? holder.nextElementSibling : holder?.previousElementSibling;
+      const r = await act({ url, body, undo: kind && pattern ? () => post("/rules", { kind, pattern, next: "/rules" }) : null });
+      if (hadFocus && (!document.activeElement || document.activeElement === document.body)) {
+        const sel = near?.dataset.pattern ? `[data-kind="${esc(near.dataset.kind)}"][data-pattern="${esc(near.dataset.pattern)}"] button` : null;
+        ((sel && $(sel)) || $(".rule-add input[name=pattern]"))?.focus({ preventScroll: true });
+      }
+      return r;
     }
     form.classList.add("busy");
     if (btn) btn.disabled = true;
@@ -1195,7 +1240,7 @@
       return;
     }
     if (advance) {
-      if (nextHref) history.pushState(null, "", nextHref);
+      if (nextHref) { history.pushState(null, "", nextHref); await markOpened(nextId); }
       else closePane(closeHref(), { focusBack: true });
     }
     try { await refresh({ moved: id, swapPane: !!nextHref || !advance, focusSubject: !viaKey && !!nextHref }); } catch { /* done anyway */ }
@@ -1223,6 +1268,13 @@
       toast(text, { actions: [{ label: "Open", run: () => openMessage(id, hrefFor(id), { focus: true }) }] });
     }
     pollStats();
+  }
+
+  // an email shown by moving on from another one (after a move, or e) is opened like any
+  // other: it counts as read before the page is drawn again
+  async function markOpened(id) {
+    if (scoresOf(id)?.read === "1") return;
+    await post(`/message/${encodeURIComponent(id)}/read`, { is_read: "1" });
   }
 
   // Move a card from the board without opening it (keys 1–4 on a focused card).
@@ -1265,7 +1317,7 @@
       after: async () => {
         if (older) { await turnPage(older, "first", inPane); return; }
         if (andNext && inPane) {
-          if (nextId) history.pushState(null, "", hrefFor(nextId));
+          if (nextId) { history.pushState(null, "", hrefFor(nextId)); await markOpened(nextId); }
           else closePane(closeHref(), { focusBack: true });
         }
         try { await refresh({ swapPane: andNext && !!nextId }); } catch { /* done anyway */ }
@@ -1360,14 +1412,7 @@
     if (t.matches && t.matches(".search input")) {
       // Esc clears the search and its results (Mail), not just the text in the field
       e.preventDefault();
-      const had = new URLSearchParams(location.search).has("q");
-      t.value = "";
-      t.blur();
-      if (had) {
-        const u = new URL(location.href);
-        for (const k of ["q", "open", "after", "before"]) u.searchParams.delete(k);
-        go(u.pathname + u.search);
-      }
+      clearSearch(t);
       return;
     }
     if (drawerOpen()) { e.preventDefault(); closeDrawer(); return; }
@@ -1383,6 +1428,21 @@
     if (t.closest && t.closest("input, textarea, select")) return;
     if (paneOpen() && $("#pane a[data-close]")) { e.preventDefault(); closePane(closeHref()); }
   }
+  function clearSearch(t) {
+    const had = new URLSearchParams(location.search).has("q");
+    t.value = "";
+    t.blur();
+    if (had) {
+      const u = new URL(location.href);
+      for (const k of ["q", "open", "after", "before"]) u.searchParams.delete(k);
+      go(u.pathname + u.search);
+    }
+  }
+  // the browser's ✕ in the search box: an "input" with no inputType (typing and Backspace have one)
+  document.addEventListener("input", (e) => {
+    const t = e.target;
+    if (t instanceof HTMLInputElement && t.matches('.search input[type="search"]') && !t.value && !e.inputType) clearSearch(t);
+  });
   document.addEventListener("keydown", (e) => {
     if (!e.defaultPrevented && !e.isComposing && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       const form = e.target instanceof Element ? e.target.closest("form[data-compose]") : null;
@@ -1400,6 +1460,7 @@
     if (t.closest("input, textarea, select, [contenteditable]") || t.isContentEditable) return;
     if (root.dataset.keys === "off") return;
     if ($("details.menu-wrap[open]:not(.closing)") || (sheetOpen() && e.key !== "?")) return;
+    if (drawerOpen() && e.key !== "c" && e.key !== "?") return; // the menu is in front: Esc closes it
     if (gTimer) {
       clearTimeout(gTimer);
       gTimer = 0;
@@ -1423,7 +1484,7 @@
         if (p) { sends[p.id]?.snack && dismiss(sends[p.id].snack); undoSend(p.id); } else runUndo();
         break;
       }
-      case "c": openCompose("/compose?next=" + encodeURIComponent(location.pathname + location.search)); break;
+      case "c": closeDrawer(); openCompose("/compose?next=" + encodeURIComponent(location.pathname + location.search)); break;
       case "r": case "a": case "f": {
         const link = $(`#pane .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) || (!$("#pane") ? $(`.detail .reply-bar [data-reply="${{ r: "reply", a: "all", f: "forward" }[e.key]}"]`) : null);
         if (!link) return;
@@ -1431,7 +1492,7 @@
         break;
       }
       case "u": if (paneOpen() && $("#pane a[data-close]")) closePane(closeHref()); else return; break;
-      case "/": { const s = $(".search input"); if (!s) return; s.focus(); s.select(); break; }
+      case "/": { const s = $('.search input[type="search"]'); if (!s) return; s.focus(); s.select(); break; }
       case "?": toggleSheet(); break;
       case "g": gTimer = setTimeout(() => { gTimer = 0; }, 1000); break;
       default: return;
@@ -1662,7 +1723,7 @@
   let drawerW = 300, drawerFrom = 1;
   drag({
     axis: "x",
-    grab: (e) => (drawerIsOpen && !wide.matches && !reduceMotion.matches
+    grab: (e) => (drawerIsOpen && !wide.matches // with Reduce Motion it doesn't follow the finger (paintDrawer), but still closes
       ? e.target.closest?.("#sidebar.open, .scrim:not([hidden])") : null),
     start: () => {
       // tablets reveal everything right of the icon rail, so that's the distance a finger covers
@@ -1688,12 +1749,18 @@
         const on = root.dataset.rail !== "on";
         if (on) root.dataset.rail = "on"; else delete root.dataset.rail;
         store.set("pref:rail", on ? "on" : "off");
+        syncMenuExpanded();
       } else if (drawerOpen()) closeDrawer(); else openDrawer();
       return;
     }
     if (e.target.closest("[data-drawer-close]") || (drawerOpen() && e.target.closest("#sidebar a"))) closeDrawer();
   });
-  wide.addEventListener?.("change", () => closeDrawer({ instant: true }));
+  // the menu button says whether the menu is showing: the full sidebar on a wide screen, the drawer below that
+  function syncMenuExpanded() {
+    $("[data-drawer]")?.setAttribute("aria-expanded", String(wide.matches ? root.dataset.rail !== "on" : drawerIsOpen));
+  }
+  syncMenuExpanded();
+  wide.addEventListener?.("change", () => { closeDrawer({ instant: true }); syncMenuExpanded(); });
   phone.addEventListener?.("change", () => { if (drawerIsOpen) { drawerSpring.set(1); settleDrawer(); } });
 
   // --- compose: floating window (new mail), inline under an email (replies), full page --------
@@ -1741,12 +1808,17 @@
     try { localStorage.removeItem(draftKey(form)); } catch { /* storage blocked */ }
   }
   function restoreDraft(form) {
-    if (form.dataset.restored || form.elements.draft_id) return; // an undone/failed email brings its own text
+    if (form.dataset.restored) return;
     form.dataset.restored = "1";
     let d = null;
     try { d = JSON.parse(store.get(draftKey(form)) || "null"); } catch { d = null; }
-    if (!d || !d.body || form.elements.body.value.trim()) return;
+    if (!d) return;
     if (Date.now() - (d.at || 0) > 14 * 864e5) { forgetDraft(form); return; }
+    // only what was typed counts: a reply's own To and Subject don't make a draft
+    const changed = (k) => d[k] && form.elements[k] && d[k] !== form.elements[k].value;
+    if (form.elements.draft_id) { // an undone email comes with its text: bring back edits made since
+      if (!["to", "cc", "bcc", "subject", "body"].some(changed)) return;
+    } else if (!(d.body || ["to", "cc", "bcc", "subject"].some(changed)) || form.elements.body.value.trim()) return;
     for (const k of ["to", "cc", "bcc", "subject", "body"]) if (form.elements[k] && d[k] != null && (k === "body" || d[k])) form.elements[k].value = d[k];
     if (d.from && form.elements.from_account) form.elements.from_account.value = d.from;
     if (d.cc || d.bcc) showCc(form);
@@ -1791,15 +1863,19 @@
     tpl.innerHTML = (await res.text()).trim(); // rendered by our server; everything is escaped
     return tpl.content.firstElementChild;
   }
+  let composeInvoker = null; // what had focus before the window opened: it gets it back after
   async function openCompose(href, { replace = false } = {}) {
     const dock = $("#compose-dock");
     if (!dock) { location.href = href; return; }
+    const was = document.activeElement;
+    if (was && was !== document.body && !dock.contains(was)) composeInvoker = was;
     const open = composeWindow();
     if (open) {
-      open.classList.remove("minimized");
+      setWindowState(open, open.classList.contains("maximized") ? "maximized" : "");
       const f = fieldsOf(open);
       if (!replace && (f.body.trim() || f.to.trim())) {
         // one window at a time (Gmail stacks them; one keeps it simple): bring it back
+        syncModal();
         focusCompose(open);
         toast("Finish or close the message you're writing first", { kind: "info" });
         return;
@@ -1838,28 +1914,45 @@
     form.scrollIntoView({ block: "nearest", behavior: reduceMotion.matches ? "auto" : "smooth" });
     focusCompose(form);
   }
-  function closeCompose(form) {
+  function closeCompose(form, { focusBack = true } = {}) {
     if (form.classList.contains("compose-page")) { location.href = form.elements.next?.value || "/"; return; }
     form.dataset.sent = form.dataset.sent || "closed";
     clearTimeout(form._saveTimer);
     const win = form.classList.contains("compose-window");
+    const detail = win ? null : form.closest(".detail");
     leave(form);
     if (win && history.state?.compose === 1) history.back();
-    syncModal();
+    syncModal(); // first: the phone's Compose button is inert while the sheet is up
+    if (focusBack && (document.activeElement === document.body || !document.activeElement)) giveFocusBack(win, detail);
+  }
+  function giveFocusBack(win, detail) {
+    const usable = (el) => el?.isConnected && el.getClientRects().length && !el.closest("[inert]");
+    const back = win ? [composeInvoker, ...$$("a[data-compose-new]")].find(usable)
+      : detail ? [$("a[data-reply]", detail), $(".detail-subject", detail)].find(usable) : null;
+    back?.focus({ preventScroll: true });
+    if (win) composeInvoker = null;
+  }
+  // minimised, full screen or neither, and the two toggles say which
+  function setWindowState(form, state) {
+    form.classList.toggle("minimized", state === "minimized");
+    form.classList.toggle("maximized", state === "maximized");
+    $("[data-compose-min]", form)?.setAttribute("aria-pressed", String(state === "minimized"));
+    $("[data-compose-max]", form)?.setAttribute("aria-pressed", String(state === "maximized"));
   }
   function closeWindowKeepingDraft(form) {
     saveDraft(form);
-    const had = fieldsOf(form).body.trim();
+    const f = fieldsOf(form);
+    const had = f.body.trim() || f.to.trim() || f.subject.trim(); // what saveDraft keeps
     closeCompose(form);
     if (had) toast("Draft saved on this device", { kind: "info" });
   }
   let sheetH = 600;
   drag({
     axis: "y",
-    grab: (e) => (phone.matches && !reduceMotion.matches && !e.target.closest("button")
+    grab: (e) => (phone.matches && !e.target.closest("button")
       ? e.target.closest(".compose-window:not(.minimized):not(.leaving) .compose-head")?.closest(".compose-window") : null),
     start: (d, win) => { if (d <= 0) return false; sheetH = win.getBoundingClientRect().height || innerHeight; },
-    move: (d, win) => { win.style.transform = `translate3d(0, ${d >= 0 ? d : -rubberband(-d, sheetH) * 0.2}px, 0)`; },
+    move: (d, win) => { if (!reduceMotion.matches) win.style.transform = `translate3d(0, ${d >= 0 ? d : -rubberband(-d, sheetH) * 0.2}px, 0)`; },
     end: (d, v, win) => {
       if (Math.max(0, d) + projection(v) > sheetH * 0.3) closeWindowKeepingDraft(win);
       else win.style.transform = ""; // springs back up (CSS transition from where it is)
@@ -1894,12 +1987,17 @@
       location.href = next;
       return;
     }
-    closeCompose(form);
-    trackSend(pending);
+    const win = form.classList.contains("compose-window");
+    const detail = win ? null : form.closest(".detail");
+    closeCompose(form, { focusBack: false }); // focus goes to the snackbar's Undo
+    // when the Undo time is over: back to the email replied to (it may have been redrawn by then)
+    trackSend(pending, win ? null : () => $("#pane .detail-subject, .detail-page .detail-subject"));
+    if (document.activeElement === document.body) giveFocusBack(win, detail);
+    if (location.pathname === "/sent") refresh().catch(() => {}); // the new email is listed
   }
   // Snackbar while the email waits (Undo), then "Message sent" or what went wrong.
   const sends = {}; // outbox id -> { snack, poll }
-  function trackSend(p) {
+  function trackSend(p, back = null) {
     session.set("outbox:pending", JSON.stringify(p));
     settle(p.id);
     const t = sends[p.id] = { snack: null, poll: 0 };
@@ -1910,7 +2008,10 @@
         { label: "View", key: false, run: () => { location.href = `/sent#s${p.id}`; } }] });
       // the Undo time is real: the snackbar goes when it's over, even while hovered or focused
       if (t.snack) t.snack._end = setTimeout(() => dismiss(t.snack), left);
-      if (t.snack && document.activeElement === document.body) $(".flash-btn", t.snack)?.focus({ preventScroll: true });
+      if (t.snack && document.activeElement === document.body) {
+        t.snack._returnTo = back || composeInvoker; // when the Undo time is over, back to the email or to what opened the message
+        $(".flash-btn", t.snack)?.focus({ preventScroll: true });
+      }
     }
     t.poll = setTimeout(() => pollSend(p.id, 0), Math.max(left, 0) + 2500);
   }
@@ -1936,17 +2037,18 @@
       settle(id);
       clearPending(id);
       toast(s.note ? `Sent, but ${s.note.charAt(0).toLowerCase()}${s.note.slice(1)}` : "Message sent", { kind: s.note ? "info" : "ok", actions: [{ label: "View", run: () => { location.href = `/sent#s${id}`; } }] });
-      if ($("#board")) refresh().catch(() => {});
+      if ($("#board") || location.pathname === "/sent"
+          || ($(".detail-page") && !$(".detail-page [data-compose]:not(.leaving)"))) refresh().catch(() => {});
       return;
     }
     if (s && s.status === "failed") {
       settle(id);
       clearPending(id);
       toast(`Not sent: ${s.error || "something went wrong"}`, { kind: "err", actions: [{ label: "Edit", run: () => openCompose(`/compose?draft=${id}`, { replace: true }) }] });
-      if ($("#board")) refresh().catch(() => {});
+      if ($("#board") || location.pathname === "/sent") refresh().catch(() => {});
       return;
     }
-    if (s && s.status === "cancelled") { settle(id); clearPending(id); return; }
+    if (s && s.status === "cancelled") { settle(id); clearPending(id); if (location.pathname === "/sent") refresh().catch(() => {}); return; }
     if (tries < 20) sends[id].poll = setTimeout(() => pollSend(id, tries + 1), 3000);
     else settle(id);
   }
@@ -1970,13 +2072,13 @@
     const row = $("[data-help-row]", form);
     if (row?.classList.contains("js-collapsed")) { toggleHelp(form, true); return; }
     const body = form.elements.body;
-    const before = body.value;
     form.classList.add("writing");
     setStatus(form, "Writing…");
     const r = await post("/compose/draft", formBody(form));
     form.classList.remove("writing");
     setStatus(form, "");
     if (!r.ok) { toast(r.message, { kind: "err" }); return; }
+    const had = body.value; // including anything typed while it was writing
     body.value = r.data.text || "";
     // the whole draft is in view before anything can be sent
     body.style.height = "";
@@ -1985,7 +2087,7 @@
     body.focus();
     body.setSelectionRange(0, 0);
     body.scrollTop = 0;
-    toast("Draft ready: read it and edit before sending", { actions: before.trim() ? [{ label: "Undo", key: false, run: () => { body.value = before; saveDraft(form); } }] : [] });
+    toast("Draft ready: read it and edit before sending", { actions: had.trim() ? [{ label: "Undo", key: false, run: () => { body.value = had; saveDraft(form); } }] : [] });
   }
   function toggleHelp(form, show) {
     const row = $("[data-help-row]", form);
@@ -2010,11 +2112,12 @@
     }
     const form = t.closest("form[data-compose]");
     if (!form) return;
-    if (t.closest("[data-show-cc]")) { showCc(form); form.elements.cc?.focus(); return; }
+    const ccLink = t.closest("[data-show-cc]");
+    if (ccLink) { showCc(form); form.elements[ccLink.dataset.showCc || "cc"]?.focus(); return; }
     if (t.closest("[data-help-toggle]")) { toggleHelp(form); return; }
-    if (t.closest("[data-compose-min]")) { form.classList.toggle("minimized"); form.classList.remove("maximized"); syncModal(); return; }
-    if (t.closest("[data-compose-max]")) { form.classList.toggle("maximized"); form.classList.remove("minimized"); return; }
-    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { form.classList.remove("minimized"); syncModal(); focusCompose(form); return; }
+    if (t.closest("[data-compose-min]")) { setWindowState(form, form.classList.contains("minimized") ? "" : "minimized"); syncModal(); return; }
+    if (t.closest("[data-compose-max]")) { setWindowState(form, form.classList.contains("maximized") ? "" : "maximized"); return; }
+    if (t.closest(".compose-head") && form.classList.contains("minimized") && !t.closest("button")) { setWindowState(form, ""); syncModal(); focusCompose(form); return; }
     if (t.closest("[data-compose-close]")) { closeWindowKeepingDraft(form); return; }
     if (t.closest("[data-compose-discard]")) {
       e.preventDefault();
@@ -2022,6 +2125,12 @@
       if ((f.body.trim() || f.to.trim()) && !confirm("Discard this draft?")) return;
       form.dataset.sent = "discarded";
       forgetDraft(form);
+      const undone = form.elements.draft_id?.value;
+      if (undone) { // the server keeps an undone email on Sent until it's discarded there too
+        const away = post(`/outbox/${encodeURIComponent(undone)}/discard`, {});
+        if (form.classList.contains("compose-page")) { away.finally(() => closeCompose(form)); return; }
+        away.then(() => { if (location.pathname === "/sent") refresh().catch(() => {}); });
+      }
       closeCompose(form);
       toast("Draft discarded", { kind: "info" });
     }
@@ -2033,6 +2142,7 @@
       saveDraft(win); win.dataset.sent = "closed";
       if (e.hasUAVisualTransition) win.remove(); else leave(win);
       syncModal();
+      if (document.activeElement === document.body) giveFocusBack(true, null);
     }
   });
   // leaving the page keeps what was typed in the last moment
@@ -2051,7 +2161,12 @@
     const m = location.hash.match(/^#s(\d+)$/);
     const item = m && document.getElementById(`s${m[1]}`);
     const d = item && $("details", item);
-    if (d) { d.open = true; $("summary", d)?.focus({ preventScroll: true }); item.scrollIntoView({ block: "center" }); }
+    if (!d) return;
+    d.open = true;
+    item.scrollIntoView({ block: "center" });
+    // the browser moves focus for the #sN link as the page finishes loading: focus the email after that
+    const focusRow = () => $("summary", d)?.focus({ preventScroll: true });
+    if (document.readyState === "complete") focusRow(); else addEventListener("load", () => requestAnimationFrame(focusRow), { once: true });
   })();
 
   // --- start ---------------------------------------------------------------------------------
@@ -2070,6 +2185,7 @@
   restoreColumns();
   syncSwitches();
   setupNav();
+  showCurrentTab();
   onScroll();
   syncModal();
   if (phone.matches && paneOpen()) $("#pane .detail-subject")?.focus({ preventScroll: true }); // /?open=N on a phone

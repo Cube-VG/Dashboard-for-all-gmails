@@ -137,12 +137,22 @@ def test_no_open_redirect_after_login(site, nxt):
     assert r.status_code == 303 and r.headers["location"] == "/"
 
 
+def test_a_plain_form_after_the_session_ended_goes_to_sign_in(site):
+    client, _, _ = site
+    # no JavaScript: a page of JSON would be a dead end, so back to that page after signing in
+    r = client.post("/message/1/score", data={"move": "do"}, headers={"Referer": "http://testserver/?open=1"})
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2F%3Fopen%3D1"
+    r = client.post("/message/1/score", data={"move": "do"}, headers={"Referer": "https://evil.example/x"})
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2F"
+
+
 def test_logout_ends_the_session(site):
     client, code, path = site
     login(client, code())
     assert client.get("/").status_code == 200
     r = client.post("/logout")
     assert r.status_code == 303 and r.headers["location"] == "/login"
+    assert "clear-site-data" not in r.headers  # drafts go (login page), Settings stay
     assert client.get("/").status_code == 303
     conn = db.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0

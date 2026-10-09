@@ -89,7 +89,7 @@ def test_inbox_tabs_like_gmail(env):
     assert columns(r.text) == {"do": [i["Contract needs signature"], i["Server down!"]]}  # Do now tab
     assert 'class="tab q-do" href="/" aria-current="page"' in r.text
     assert 'href="/?tab=schedule"' in r.text and 'href="/?tab=unsorted"' in r.text
-    assert '<span class="tab-new num" data-new>1<span class="tab-word"> new</span></span>' in r.text  # unread in Do now
+    assert '<span class="tab-new num" data-new data-total="2">1<span class="tab-word"> new</span></span>' in r.text  # unread in Do now
     assert '>2<span class="tab-word"> waiting</span>' in r.text  # the Not sorted tab
     r = env.client.get("/", params={"tab": "schedule"})
     assert columns(r.text) == {"schedule": [i["Budget review"], i["Quarterly planning"]]}
@@ -431,9 +431,38 @@ def test_all_caught_up_and_empty_columns(env):
     assert "Nothing to plan." in r.text and "Nothing urgent. You&#39;re clear." in r.text
 
 
+def test_a_low_rule_sorts_that_senders_waiting_mail_now(env):
+    r = env.client.post("/rules", headers=JSON, data={"kind": "low", "pattern": "@buyer.com"})
+    assert r.json()["message"].endswith("Sorted 1 waiting email.") and r.json()["sorted"] == 1
+    row = query(env, "SELECT importance, urgency, scored_by FROM messages WHERE subject = 'Order #42 refund request'")[0]
+    assert tuple(row) == (1, 1, "rule")
+    # the AI reads every VIP email, so a VIP rule leaves waiting mail for the next sync
+    r = env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "evil@hack.er"})
+    assert r.json()["message"].endswith("Their waiting mail is sorted as important at the next sync.")
+    assert query(env, "SELECT scored_by FROM messages WHERE from_email = 'evil@hack.er'")[0][0] is None
+
+
+def test_senders_with_a_rule_are_not_suggested_again(env):
+    conn = db.connect(env.path)
+    db.insert_messages(conn, env.gmail, [mail(7, "Deal one", 1, sender="promo@deals.com", name="Deals"),
+                                         mail(8, "Deal two", 2, sender="promo@deals.com", name="Deals")])
+    conn.commit()
+    conn.close()
+    offer = 'name="pattern" value="promo@deals.com"'
+    assert offer in env.client.get("/", params={"tab": "unsorted"}).text
+    env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "promo@deals.com"})
+    assert offer not in env.client.get("/", params={"tab": "unsorted"}).text  # a second tap would contradict it
+
+
+def test_a_mangled_email_link_gets_the_friendly_page(env):
+    r = env.client.get("/message/abc", headers={"Accept": "text/html"})
+    assert r.status_code == 404 and "Back to the inbox" in r.text
+    assert env.client.get("/message/abc", headers=JSON).status_code == 422  # scripts keep the details
+
+
 def test_rule_copy_and_removable_rule_chips(env):
     r = env.client.post("/rules", headers=JSON, data={"kind": "vip", "pattern": "boss@corp.com"})
-    assert r.json()["message"].endswith("It also sorts mail that's still waiting.")
+    assert r.json()["message"].endswith("Their waiting mail is sorted as important at the next sync.")
     rule_id = query(env, "SELECT id FROM rules WHERE pattern = 'boss@corp.com'")[0][0]
     detail = env.client.get(f"/message/{env.ids['Contract needs signature']}").text
     assert 'data-kind="vip" data-pattern="boss@corp.com"' in detail  # lets JS undo the removal

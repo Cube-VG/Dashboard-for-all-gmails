@@ -1,4 +1,4 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Locator, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -128,3 +128,11 @@ export async function swipe(page: Page, x0: number, y0: number, x1: number, y1: 
 
 /** The snackbar at the bottom ("Sending… Undo", "Moved to Later", …). */
 export const snackbar = (page: Page) => page.locator('.flash:not(.leaving)');
+
+/** Gone from the screen but still read out (the icon rail keeps its words for screen readers). */
+export async function expectOnlyForScreenReaders(locator: Locator) {
+  await expect.poll(() => locator.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width <= 1 && r.height <= 1;
+  }), { message: 'not visible on screen' }).toBe(true);
+}

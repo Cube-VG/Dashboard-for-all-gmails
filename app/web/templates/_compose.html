@@ -12,8 +12,8 @@
   {% if variant == "window" %}
   <div class="compose-head">
     <span class="compose-title">{{ title }}</span>
-    <button type="button" class="icon-btn" data-compose-min aria-label="Minimize" title="Minimize"><svg class="ic" aria-hidden="true"><use href="#i-minimize"/></svg></button>
-    <button type="button" class="icon-btn" data-compose-max aria-label="Full screen" title="Full screen"><svg class="ic" aria-hidden="true"><use href="#i-maximize"/></svg></button>
+    <button type="button" class="icon-btn" data-compose-min aria-pressed="false" aria-label="Minimize" title="Minimize"><svg class="ic" aria-hidden="true"><use href="#i-minimize"/></svg></button>
+    <button type="button" class="icon-btn" data-compose-max aria-pressed="false" aria-label="Full screen" title="Full screen"><svg class="ic" aria-hidden="true"><use href="#i-maximize"/></svg></button>
     <button type="button" class="icon-btn" data-compose-close aria-label="Save &amp; close" title="Save &amp; close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
   </div>
   {% elif inline %}
@@ -38,7 +38,7 @@
     <div class="cf-row">
       <label class="cf-label" for="to-{{ variant }}">To</label>
       <input id="to-{{ variant }}" class="cf-input" name="to" value="{{ v.to }}" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false" placeholder="name@example.com, …" {% if mode == "forward" or mode == "new" %}autofocus{% endif %}>
-      <span class="cf-more{% if show_cc %} js-hidden{% endif %}" data-cc-links><button type="button" class="cf-link" data-show-cc>Cc</button><button type="button" class="cf-link" data-show-cc>Bcc</button></span>
+      <span class="cf-more{% if show_cc %} js-hidden{% endif %}" data-cc-links><button type="button" class="cf-link" data-show-cc="cc">Cc</button><button type="button" class="cf-link" data-show-cc="bcc">Bcc</button></span>
     </div>
     <div class="cf-row cc-row{% if not show_cc %} js-collapsed{% endif %}">
       <label class="cf-label" for="cc-{{ variant }}">Cc</label>

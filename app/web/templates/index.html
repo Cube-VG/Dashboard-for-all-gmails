@@ -15,9 +15,9 @@
   {%- else %}<span class="icon-btn" aria-hidden="true"><svg class="ic"><use href="#i-next"/></svg></span>{% endif -%}
 </span>
 {%- endmacro %}
+<h1 class="sr-only">{% if f.view == "all" %}All mail{% elif f.view == "matrix" %}Priority matrix{% else %}Inbox: {{ "Not sorted" if f.tab == "unsorted" else ACTIONS[f.tab] }}{% endif %}{% if f.q %}, search “{{ f.q }}”{% endif %}</h1>
 <div class="layout{% if msg %} with-pane{% endif %}" id="layout">
   <div class="board" id="board">
-    <h1 class="sr-only">{% if f.view == "all" %}All mail{% elif f.view == "matrix" %}Priority matrix{% else %}Inbox: {{ "Not sorted" if f.tab == "unsorted" else ACTIONS[f.tab] }}{% endif %}{% if f.q %}, search “{{ f.q }}”{% endif %}</h1>
     <div class="list-toolbar">
       <a class="chip-link unread-chip{% if f.unread %} on{% endif %}" href="{{ f.url(unread='' if f.unread else '1') }}"{% if f.unread %} aria-current="true"{% endif %}><svg class="ic" aria-hidden="true"><use href="#i-unread"/></svg>Unread</a>
       {% if f.account %}<a class="af" href="{{ f.url(account='') }}" aria-label="Remove filter {{ acct.label if acct else f.account }}"><i class="dot" style="--c: {{ acct.color if acct else '' }}"></i><b>{{ acct.label if acct else f.account }}</b><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></a>{% endif %}
@@ -104,7 +104,7 @@
       <a class="tab q-{{ t.key }}" href="{{ f.url(tab=t.key) }}"{% if f.tab == t.key %} aria-current="page"{% endif %} data-tab="{{ t.key }}">
         <span class="q-glyph{% if t.key == 'unsorted' %} q-none{% endif %}"><svg class="ic" aria-hidden="true"><use href="#{{ 'i-hourglass' if t.key == 'unsorted' else 'i-q-' ~ t.key }}"/></svg></span>
         <span class="tab-text"><span class="tab-name">{{ t.title }}</span>
-          {%- if t.key == 'unsorted' %}<span class="tab-new num">{{ t.total }}<span class="tab-word"> waiting</span></span>{% elif t.unread %}<span class="tab-new num" data-new>{{ t.unread }}<span class="tab-word"> new</span></span>{% elif t.total %}<span class="tab-count num">{{ t.total }}</span>{% endif %}</span>
+          {%- if t.key == 'unsorted' %}<span class="tab-new num">{{ t.total }}<span class="tab-word"> waiting</span></span>{% elif t.unread %}<span class="tab-new num" data-new data-total="{{ t.total }}">{{ t.unread }}<span class="tab-word"> new</span></span>{% elif t.total %}<span class="tab-count num">{{ t.total }}</span>{% endif %}</span>
         <span class="tab-ind" aria-hidden="true"></span>
       </a>
       {% endfor %}
@@ -112,7 +112,7 @@
     {% if f.tab == "unsorted" and cards %}
     {% if senders %}
     <div class="senders">
-      <h3 class="mini-title">Sort whole senders at once <span class="hint-inline">a rule sorts their mail now and in future, without the AI</span></h3>
+      <h3 class="mini-title">Sort whole senders at once <span class="hint-inline">a rule sorts their mail now and in future (Low skips the AI)</span></h3>
       <ul class="sender-rows">
         {% for s in senders %}
         <li>

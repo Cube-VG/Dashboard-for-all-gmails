@@ -25,6 +25,8 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 import jinja2
 from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -35,6 +37,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import config, db
 from app.ai import drafts
+from app.ai import rules as sort_rules
 from app.ai.scoring import QUADRANTS, quadrant
 from app.send import message as mail
 from app.send import outbox
@@ -460,13 +463,31 @@ def _tabs(conn, f: Filters) -> tuple[list[dict], list[dict], int]:
 
 
 def _sender_suggestions(conn, f: "Filters") -> list[dict]:
-    """Senders with several unsorted emails (all of them, not just this page): sort them in one go."""
+    """Senders with several unsorted emails (all of them, not just this page): sort them in one go.
+    Senders that already have a rule aren't offered again (a second tap would contradict it)."""
     where, args = f.where()
     rows = conn.execute(
         "SELECT lower(m.from_email) AS email, MAX(m.from_name) AS name, COUNT(*) AS n" + FROM
         + _and(where, "(m.importance IS NULL OR m.urgency IS NULL) AND m.from_email != ''")
-        + " GROUP BY lower(m.from_email) HAVING COUNT(*) > 1 ORDER BY n DESC, email LIMIT 5", args).fetchall()
-    return [{"email": r["email"], "name": r["name"] or r["email"], "n": r["n"]} for r in rows]
+        + " GROUP BY lower(m.from_email) HAVING COUNT(*) > 1 ORDER BY n DESC, email LIMIT 30", args).fetchall()
+    rules = db.list_rules(conn)
+    ruled = lambda email: any(sort_rules.matching_rule({"from_email": email}, rules, k) for k in RULE_KINDS)  # noqa: E731
+    return [{"email": r["email"], "name": r["name"] or r["email"], "n": r["n"]}
+            for r in rows if not ruled(r["email"])][:5]
+
+
+def _sort_waiting(conn, kind: str, pattern: str) -> int:
+    """A new rule sorts that sender's waiting mail straight away, as the next sync would.
+    VIP mail still goes to the AI, which reads every VIP email. Returns how many were sorted."""
+    new, rules, n = [{"kind": kind, "pattern": pattern}], db.list_rules(conn), 0
+    for row in conn.execute("SELECT * FROM messages WHERE scored_by IS NULL").fetchall():
+        if sort_rules.matching_rule(row, new, kind) is None:
+            continue
+        scores = sort_rules.decide(row, rules)
+        if scores is not None:
+            db.save_scores(conn, row["id"], scores, "rule")
+            n += 1
+    return n
 
 
 def _categories(conn, f: Filters | None = None) -> list[str]:
@@ -645,9 +666,13 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             with connect() as conn:
                 signed_in = auth.session_valid(conn, request.cookies.get(auth.COOKIE))
             if not signed_in:
-                if request.method in ("GET", "HEAD") and not _wants_json(request) \
-                        and "partial" not in request.query_params:
-                    target = path + (f"?{request.url.query}" if request.url.query else "")
+                if not _wants_json(request) and "partial" not in request.query_params:
+                    if request.method in ("GET", "HEAD"):
+                        target = path + (f"?{request.url.query}" if request.url.query else "")
+                    else:  # a plain form (no JavaScript): back to the page it was on, nothing re-sent
+                        ref = urlsplit(request.headers.get("referer", ""))
+                        same = ref.netloc == request.headers.get("host")
+                        target = _safe_next((ref.path + (f"?{ref.query}" if ref.query else "")) if same else None)
                     return RedirectResponse("/login?" + urlencode({"next": target}), status_code=303)
                 return JSONResponse({"ok": False, "message": "Please sign in again", "login": "/login"},
                                     status_code=401)
@@ -678,6 +703,13 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                 request, "error.html", {"status": exc.status_code, "detail": exc.detail},
                 status_code=exc.status_code)
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_input(request: Request, exc: RequestValidationError):
+        # a mangled link (/message/abc) gets the friendly page too; scripts still get the details
+        if "text/html" in request.headers.get("accept", ""):
+            return await http_error(request, StarletteHTTPException(404, "Not Found"))
+        return await request_validation_exception_handler(request, exc)
 
     # --- login (only when DASHBOARD_PASSWORD_HASH is set) ----------------------------------
     def login_page(request: Request, nxt: str, error: str = "", status: int = 200):
@@ -753,7 +785,7 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             conn.commit()
         resp = RedirectResponse("/login" if login_on else "/", status_code=303)
         resp.delete_cookie(auth.COOKIE, path="/")
-        resp.headers["Clear-Site-Data"] = '"storage"'  # unsent drafts saved in this browser
+        # unsent drafts saved in this browser go when the login page loads (prefs.js); Settings stay
         return resp
 
     @app.get("/")
@@ -870,10 +902,16 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
                                    "(@company.com)", next_url, ok=False)
         with connect() as conn:
             db.add_rule(conn, kind, p)
+            sorted_now = _sort_waiting(conn, kind, p)
             conn.commit()
-        return _reply(request, f"Rule saved: {RULE_KINDS[kind]} for {p}. "
-                               "It also sorts mail that's still waiting.",
-                      next_url, kind=kind, pattern=p)
+        if sorted_now:
+            done = f"Sorted {sorted_now} waiting email{'s' if sorted_now != 1 else ''}."
+        elif kind == "vip":
+            done = "Their waiting mail is sorted as important at the next sync."
+        else:
+            done = "It also sorts mail that's still waiting."
+        return _reply(request, f"Rule saved: {RULE_KINDS[kind]} for {p}. {done}",
+                      next_url, kind=kind, pattern=p, sorted=sorted_now)
 
     @app.post("/rules/{rule_id}/delete")
     def delete_rule(request: Request, rule_id: int, next_url: NextField = None):
@@ -947,7 +985,8 @@ def create_app(conn_factory: Callable[[], sqlite3.Connection] = db.connect,
             "v": v, "quote": quote, "send_accounts": accounts, "from_email": from_email,
             "draft_id": draft["id"] if draft is not None else None, "compose_error": error,
             "compose_next": nxt, "variant": variant, "undo_seconds": outbox.UNDO_SECONDS,
-            "draft_key": f"draft:{mode}:" + ((original["message_id"] or str(original["id"]))
+            # an undone email keeps edits made since under its own key, not as a new message
+            "draft_key": f"draft:outbox:{draft['id']}" if draft is not None else f"draft:{mode}:" + ((original["message_id"] or str(original["id"]))
                                              if original is not None else "new"),
         }
 
