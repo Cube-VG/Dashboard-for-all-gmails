@@ -52,12 +52,15 @@ run true || {
 say "Copying the app"
 TARFLAGS=()
 tar --version 2>/dev/null | grep -q bsdtar && TARFLAGS+=(--no-mac-metadata)
-COPYFILE_DISABLE=1 tar czf - ${TARFLAGS[@]+"${TARFLAGS[@]}"} --exclude=./.venv --exclude=./data --exclude=./.env \
-  --exclude=./accounts.yaml --exclude='__pycache__' --exclude=./.pytest_cache . |
-  run "rm -rf ~/$DIR.incoming && mkdir -p ~/$DIR ~/$DIR.incoming && tar xzf - -C ~/$DIR.incoming --warning=no-unknown-keyword \\
-       && { sudo systemctl stop inbox 2>/dev/null || true; } && cp -a ~/$DIR.incoming/. ~/$DIR/ && rm -rf ~/$DIR.incoming"
-# (unpacked aside, then swapped in while the app is stopped: a phone never gets a half-copied file,
-#  which it would otherwise keep for good; setup-vm.sh starts the app again)
+COPYFILE_DISABLE=1 tar czf - ${TARFLAGS[@]+"${TARFLAGS[@]}"} --exclude=./.git --exclude=./.venv --exclude=./data \
+  --exclude=./.env --exclude=./accounts.yaml --exclude='__pycache__' --exclude=./.pytest_cache . |
+  run "rm -rf ~/$DIR.incoming && mkdir -p ~/$DIR ~/$DIR.incoming && tar xzf - -C ~/$DIR.incoming --warning=no-unknown-keyword || exit 1
+       sudo systemctl stop inbox 2>/dev/null || true
+       if cp -af ~/$DIR.incoming/. ~/$DIR/; then rm -rf ~/$DIR.incoming; sudo systemctl start inbox 2>/dev/null || true
+       else sudo systemctl start inbox 2>/dev/null; echo 'Copying the new version failed; the app is running again as it was.' >&2; exit 1; fi"
+# (unpacked aside, then swapped in while the app is stopped, so a phone never gets a half-copied
+#  file, which it would keep for good. -f replaces read-only files. The app starts again right after
+#  the copy, whether it worked or not, so nothing later can leave it stopped)
 
 say "Setting up the VM (packages, service, private HTTPS address)"
 # the VM shows times in this Mac's time zone (e.g. Asia/Kolkata), not UTC
