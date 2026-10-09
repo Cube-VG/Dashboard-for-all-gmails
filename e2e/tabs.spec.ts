@@ -279,7 +279,7 @@ test.describe('Inbox tabs', () => {
     await expectSameDocument(page);
   });
 
-  // APP BUG: on a phone the tab strip jumps back to its start after every tab change or reload, so the chosen tab is off screen
+  // Was a bug, now fixed: on a phone the tab strip jumps back to its start after every tab change or reload, so the chosen tab is off screen
   test('the chosen tab stays in view in the tab strip', async ({ page }) => {
     await page.goto('/');
     for (const tab of ['later', 'unsorted'] as Tab[]) {
@@ -558,7 +558,7 @@ test.describe('Sidebar', () => {
     await expect(nav2.getByRole('link', { name: /^Work\b/ })).toHaveAccessibleName('Work 1 unread');
   });
 
-  // APP BUG: on a tablet the Inbox logo link in the top bar has no accessible name (its text is hidden below 1024px)
+  // Was a bug, now fixed: on a tablet the Inbox logo link in the top bar has no accessible name (its text is hidden below 1024px)
   test('every link in the top bar has a name screen readers can read', async ({ page }) => {
     await page.goto('/');
     const links = page.getByRole('banner').getByRole('link');
@@ -783,7 +783,7 @@ test.describe('Pages of 50', () => {
     await expect(rows(page).last().getByRole('link')).toBeFocused();
   });
 
-  // APP BUG: on a touch tablet the ‹ › page arrows are 36px, below the 44px touch target (only phones get 44px)
+  // Was a bug, now fixed: on a touch tablet the ‹ › page arrows are 36px, below the 44px touch target (only phones get 44px)
   test('the page arrows are big enough to hit', async ({ page, isPhone, isTablet }) => {
     await page.goto('/?tab=schedule');
     await turnPage(page, 'older'); // both arrows are live on page 2
@@ -887,7 +887,7 @@ test.describe('Fresh data after moving an email', () => {
     await expect(tabBar(page).getByRole('link')).toHaveCount(4);
   });
 
-  // APP BUG: the email "Open next email after an action" shows after a move is never marked read, so the counts stay up
+  // Was a bug, now fixed: the email "Open next email after an action" shows after a move is never marked read, so the counts stay up
   test('the email shown next after a move counts as read', async ({ page, isPhone }) => {
     await page.goto('/');
     await press(rows(page).filter({ hasText: 'Payment failed for velocity.example' }).getByRole('link'));
@@ -905,7 +905,7 @@ test.describe('Fresh data after moving an email', () => {
     await expect((await sidebar(page)).getByRole('link', { name: /^Inbox/ })).toHaveAccessibleName('Inbox 4 unread');
   });
 
-  // APP BUG: a tab prefetched (mouse hover) while a move is still saving is cached with the old list and shown stale for 3 s+
+  // Was a bug, now fixed: a tab prefetched (mouse hover) while a move is still saving is cached with the old list and shown stale for 3 s+
   test('a tab looked at while a move is still saving is not shown out of date', async ({ page, isPhone, isTablet }) => {
     test.skip(isPhone || isTablet, 'hover prefetch and the 1–4 keys are mouse/keyboard paths');
     await page.goto('/');

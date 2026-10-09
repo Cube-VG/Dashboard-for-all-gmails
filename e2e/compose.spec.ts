@@ -4,8 +4,6 @@
 // Send → "Sending… Undo" → "Message sent", checked against what the fake mail server received.
 //
 // Accessibility gaps noted while writing these (CSS used only where there is no accessible name):
-// - The Minimize / Full screen buttons never say whether they are on (see the APP BUG below), so
-//   the toggled button is found by its data attribute to read its state.
 // - "Draft saved" / "Draft restored" is a bare <span aria-live>: found by its text.
 // - The minimised window's title bar brings it back on click, but it isn't a button (no role,
 //   not focusable): keyboard users have to use Minimize again.
@@ -198,7 +196,7 @@ test.describe('Opening a new message', () => {
     await expect(bccLink(form)).toBeHidden();
   });
 
-  // APP BUG: the Bcc link puts the cursor in Cc, so a "hidden" address typed next goes to Cc, visible to everyone
+  // Was a bug, now fixed: the Bcc link puts the cursor in Cc, so a "hidden" address typed next goes to Cc, visible to everyone
   test('the Bcc link puts the cursor in Bcc', async ({ page }) => {
     await page.goto('/');
     const form = await openNewMessage(page);
@@ -356,7 +354,7 @@ test.describe('Drafts', () => {
     await expectFilledIn(again, { to: 'pat@example.com', body: 'Typed in a hurry' });
   });
 
-  // APP BUG: "Draft saved" shows for an address + subject without text, but such a draft never comes back
+  // Was a bug, now fixed: "Draft saved" shows for an address + subject without text, but such a draft never comes back
   test('an address and a subject without any text yet come back too', async ({ page }) => {
     await page.goto('/');
     const form = await openNewMessage(page);
@@ -452,7 +450,7 @@ test.describe('The compose window', () => {
     await expect.poll(async () => (await form.boundingBox())!.width).toBe(560);
   });
 
-  // APP BUG: Minimize and Full screen are toggles that never say they're on (no aria-pressed/expanded, same name)
+  // Was a bug, now fixed: Minimize and Full screen are toggles that never say they're on (no aria-pressed/expanded, same name)
   test('Minimize and Full screen tell screen readers when they are on', async ({ page, isPhone }) => {
     await page.goto('/');
     const form = await openNewMessage(page);
@@ -483,7 +481,7 @@ test.describe('The compose window', () => {
     await expectFilledIn(form, { to: 'pat@example.com', body: 'The first one' });
   });
 
-  // APP BUG: on a phone, a minimised message brought back with Compose covers the screen but the page behind stays reachable
+  // Was a bug, now fixed: on a phone, a minimised message brought back with Compose covers the screen but the page behind stays reachable
   test('a message brought back with Compose covers the page again on a phone, like when it opened', async ({ page, isPhone }) => {
     await page.goto('/');
     const behind = page.getByRole('searchbox', { name: 'Search mail' });
@@ -529,7 +527,7 @@ test.describe('The compose window', () => {
     await expectFilledIn(again, { to: 'pat@example.com', body: 'Back should keep this' });
   });
 
-  // APP BUG: closing a new message drops keyboard focus to the page body instead of returning it to Compose
+  // Was a bug, now fixed: closing a new message drops keyboard focus to the page body instead of returning it to Compose
   test('closing a new message puts focus back on Compose', async ({ page }) => {
     await page.goto('/');
     const control = composeControl(page);
@@ -685,7 +683,7 @@ test.describe('Sending and Undo send', () => {
     expect(await sentMail()).toEqual([]);
   });
 
-  // APP BUG: the Sent page never updates by itself: a sent email keeps "Sending…" and its Undo, and one written there isn't listed
+  // Was a bug, now fixed: the Sent page never updates by itself: a sent email keeps "Sending…" and its Undo, and one written there isn't listed
   test('the Sent page keeps up: "Sending…" goes once it is sent, and a new email shows up', async ({ page, sentMail }) => {
     test.slow();
     await page.goto('/');
@@ -711,7 +709,7 @@ test.describe('Sending and Undo send', () => {
     await expect(page.getByRole('listitem').filter({ hasText: 'Written on Sent' }), 'the new email is listed').toBeVisible();
   });
 
-  // APP BUG: discarding an undone email in its window leaves it on the Sent page as "Undone" (with Edit / Discard)
+  // Was a bug, now fixed: discarding an undone email in its window leaves it on the Sent page as "Undone" (with Edit / Discard)
   test('Discard on an undone email takes it off the Sent page too', async ({ page }) => {
     const ask = dialogs(page, true);
     await page.goto('/');

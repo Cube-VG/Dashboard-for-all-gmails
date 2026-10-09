@@ -1153,16 +1153,24 @@ html:not(.js) [data-cc-links], html:not(.js) [data-help-toggle] { display: none;
 .help-write { display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 6px 6px 6px 14px; border-radius: var(--r-pill); background: var(--ai-bg); }
 .help-write > .ic { color: var(--on-pale); }
 .help-write .cf-input { min-height: 36px; font-size: .875rem; }
-.compose-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px 12px 16px; }
+/* one line, always: when space runs out (a narrow phone, 200% text) the draft status and then the
+   Help me write label shorten with "…"; nothing wraps, so no button moves under a finger */
+.compose-bar { position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 12px 12px 16px; }
 .compose-bar .spacer { flex: 1; }
 .send-btn { min-height: 40px; padding: 0 18px 0 22px; }
 .send-btn .ic { width: 1rem; height: 1rem; }
-.help-btn { min-height: 40px; padding: 0 14px 0 10px; color: var(--text); font-size: .875rem; }
+.help-btn { min-height: 40px; min-width: 0; padding: 0 14px 0 10px; color: var(--text); font-size: .875rem; }
+.help-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .help-btn .ic { color: var(--on-pale); }
 .help-btn[aria-expanded="true"] { background: var(--ai-bg); }
 .compose-bar .icon-btn { background: transparent; color: var(--text-2); }
 @media (hover: hover) and (pointer: fine) { .compose-bar .icon-btn:hover { background: var(--fill-press); color: var(--text); } }
-.compose-status { color: var(--text-2); font-size: .75rem; }
+.compose-status { flex-shrink: 1000; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: .75rem; }
+/* the phone's full-screen sheet: a caption in the corner of the message instead (no room in the row) */
+@media (max-width: 767px) {
+  .compose-window .compose-status { position: absolute; z-index: 1; right: 16px; bottom: calc(100% + 8px); pointer-events: none; }
+  .compose-inline .compose-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } /* read out, not shown: no room beside the buttons */
+}
 .compose-error { margin: 8px 16px 0; }
 .compose-foot { margin: -6px 16px 10px; font-size: .75rem; }
 .compose-window .compose-foot { display: none; }

@@ -308,7 +308,7 @@ test.describe('Sender rules page', () => {
     await expect(patternsIn(page, VIP)).toHaveText(['priya@acme.example']);
   });
 
-  // APP BUG: removing a rule with the keyboard drops focus to <body> (the Remove button is re-rendered away)
+  // Was a bug, now fixed: removing a rule with the keyboard drops focus to <body> (the Remove button is re-rendered away)
   test('removing a rule with the keyboard keeps the focus on the Rules page', async ({ page }) => {
     await page.goto('/rules');
     await addRule(page, LOW, '@medium.example');
@@ -326,7 +326,7 @@ test.describe('Sender rules page', () => {
     }), { message: 'focus stays in the page (e.g. the next Remove button), not on <body>' }).toBe(true);
   });
 
-  // APP BUG: after adding a rule the page re-renders and the rule type jumps back to VIP
+  // Was a bug, now fixed: after adding a rule the page re-renders and the rule type jumps back to VIP
   test('the rule type you picked stays picked for the next rule', async ({ page }) => {
     await page.goto('/rules');
     await addRule(page, LOW, '@medium.example');
@@ -355,7 +355,7 @@ test.describe('Sender rules page', () => {
     }
   });
 
-  // APP BUG: on a phone the Compose button covers the last rule's Remove button, even scrolled to the very bottom
+  // Was a bug, now fixed: on a phone the Compose button covers the last rule's Remove button, even scrolled to the very bottom
   test('scrolled to the bottom, the last Remove button is not hidden under the Compose button', async ({ page }) => {
     await page.goto('/rules');
     await addRule(page, PRIVATE, '@bank.example');
@@ -403,7 +403,6 @@ test.describe('Sender rules page without JavaScript', () => {
     await expect(page.getByRole('radio', { name: LOW, exact: true })).toBeChecked();
   });
 
-  // APP BUG (phone): without JavaScript the full-width Compose button sits on top of the last rule's Remove button, so it can't be tapped
   test('a rule can be added and removed with plain form posts', async ({ page }) => {
     await page.goto('/rules');
     await page.getByRole('radio', { name: PRIVATE, exact: true }).check();
@@ -414,6 +413,8 @@ test.describe('Sender rules page without JavaScript', () => {
     await expect(ruleItem(page, PRIVATE, '@bank.example')).toContainText('1 email ·');
     await press(page.getByRole('link', { name: 'Dismiss' })); // the flash stays until dismissed without JS
     await expect(page.getByRole('status')).toHaveCount(0);
+    // scrolled up into the middle of the screen, as a person would, clear of the floating Compose button
+    await removeButton(page, '@bank.example').evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await removeButton(page, '@bank.example').click({ timeout: 10_000 });
     await expect(page.getByRole('status')).toContainText('Rule removed');
     await expect(ruleGroup(page, PRIVATE).getByRole('listitem')).toHaveCount(0);
@@ -738,7 +739,7 @@ test.describe('Compact rows', () => {
     await expect.poll(async () => (await firstRow.boundingBox())!.height).toBe(before);
   });
 
-  // APP BUG: on a tablet, compact rows are 32px tall: `:root[data-density=compact] .row-link` beats the 44px touch minimum
+  // Was a bug, now fixed: on a tablet, compact rows are 32px tall: `:root[data-density=compact] .row-link` beats the 44px touch minimum
   test('on touch screens compact rows are still at least 44px tall', async ({ page }) => {
     test.skip(!isTouch(), 'the 44px minimum is for fingers (pointer: coarse); the desktop uses a mouse');
     await page.goto('/?view=all');
@@ -877,7 +878,7 @@ test.describe('Sidebar rail', () => {
     await expect(label).toBeVisible();
   });
 
-  // APP BUG: on the desktop the Main menu button keeps aria-expanded="false" while the full sidebar is shown, and never changes it
+  // Was a bug, now fixed: on the desktop the Main menu button keeps aria-expanded="false" while the full sidebar is shown, and never changes it
   test('the Main menu button tells screen readers whether the sidebar is expanded', async ({ page, isPhone, isTablet }) => {
     await page.goto('/');
     if (isPhone || isTablet) {
@@ -895,7 +896,7 @@ test.describe('Sidebar rail', () => {
     await expect(mainMenu(page), 'collapsed to the rail').toHaveAttribute('aria-expanded', 'false');
   });
 
-  // APP BUG: the remembered rail (data-rail=on) also hides every label in the drawer once the window is narrower than 1024px
+  // Was a bug, now fixed: the remembered rail (data-rail=on) also hides every label in the drawer once the window is narrower than 1024px
   test('after collapsing to a rail on a wide screen, the drawer on a narrower one still shows labels', async ({ page, isPhone, isTablet }) => {
     test.skip(isPhone, 'a phone is never 1024px wide, so it cannot collapse the sidebar to a rail');
     // tablet: held landscape (1080 wide), then turned to portrait; desktop: a window made narrower
@@ -1030,7 +1031,7 @@ test.describe('Log out', () => {
     await expect(page).toHaveURL(/\/login\?next=%2Frules$/);
   });
 
-  // APP BUG: Log out sends Clear-Site-Data: "storage", which wipes every saved Setting, not just the unsent drafts
+  // Was a bug, now fixed: Log out sends Clear-Site-Data: "storage", which wipes every saved Setting, not just the unsent drafts
   test('your Settings (theme, compact rows) are still there after logging out and in again', async ({ page }) => {
     await page.goto(base + '/login');
     await page.getByLabel('Password').fill(PASSWORD);

@@ -516,7 +516,7 @@ test.describe('Names, headings and landmarks', () => {
     expect(missing, 'controls without an accessible name').toEqual([]);
   });
 
-  // APP BUG: on tablets (<=1023px) the top bar's Inbox logo link has no accessible name at all, and the sidebar rail's icon links are named only by title
+  // Was a bug, now fixed: on tablets (<=1023px) the top bar's Inbox logo link has no accessible name at all, and the sidebar rail's icon links are named only by title
   test('icon-only controls are labelled with aria-label (or hidden text) on every layout', async ({ page }) => {
     const unlabelled: string[] = [];
     const check = async (where: string) => {
@@ -571,7 +571,7 @@ test.describe('Names, headings and landmarks', () => {
     }
   });
 
-  // APP BUG: with an email open, the page exposes no h1 (the list's h1 is hidden with the list; the subject is an h2)
+  // Was a bug, now fixed: with an email open, the page exposes no h1 (the list's h1 is hidden with the list; the subject is an h2)
   test('with an email open, screen readers still find exactly one h1', async ({ page }) => {
     await page.goto('/');
     await press(rowLink(page, CONTRACT));
@@ -996,7 +996,7 @@ test.describe('Keyboard only', () => {
 // --- returning focus after compose (every device) ----------------------------------------------
 
 test.describe('Compose window focus', () => {
-  // APP BUG: closing the compose window (Esc or "Save & close") drops focus to <body> instead of the Compose button that opened it
+  // Was a bug, now fixed: closing the compose window (Esc or "Save & close") drops focus to <body> instead of the Compose button that opened it
   test('closing the compose window gives focus back to the Compose button', async ({ page }) => {
     await page.goto('/');
     const opener = composeOpener(page);
@@ -1066,7 +1066,7 @@ test.describe('Drawer (phone and tablet)', () => {
     await expect(menuButton(page)).toBeFocused();
   });
 
-  // APP BUG: on Sent and Rules the page behind the open menu is not made inert (syncModal only inerts #board), so Tab and screen readers reach it
+  // Was a bug, now fixed: on Sent and Rules the page behind the open menu is not made inert (syncModal only inerts #board), so Tab and screen readers reach it
   test('on Sent and Rules the page behind the open menu is unreachable too', async ({ page }) => {
     const leaks: string[] = [];
     for (const url of ['/rules', '/sent']) {
@@ -1086,7 +1086,7 @@ test.describe('Drawer (phone and tablet)', () => {
 // --- full-screen views: an email and compose on a phone --------------------------------------------------------------------
 
 test.describe('Full-screen email and compose', () => {
-  // APP BUG: on a phone the full-screen compose sheet opened from Rules (or Sent) leaves the page behind it reachable (syncModal only inerts #board)
+  // Was a bug, now fixed: on a phone the full-screen compose sheet opened from Rules (or Sent) leaves the page behind it reachable (syncModal only inerts #board)
   test('the full-screen compose sheet on a phone hides the page behind it, on the inbox and on Rules', async ({ page, isPhone }) => {
     test.skip(!isPhone, 'Only phones show compose as a full-screen sheet; on wider screens it is a floating window beside the page');
     const leaks: string[] = [];
@@ -1295,7 +1295,7 @@ const bigText = (page: Page) => page.addInitScript(() => {
 });
 
 test.describe('Zoom and large text', () => {
-  // APP BUG: at 200% zoom (and on a short phone screen) the ⚙ Settings menu runs off the bottom of the screen and can't be scrolled, cutting off its last items
+  // Was a bug, now fixed: at 200% zoom (and on a short phone screen) the ⚙ Settings menu runs off the bottom of the screen and can't be scrolled, cutting off its last items
   test('at 200% zoom nothing is cut off, covered or scrolls sideways', async ({ page, isPhone, isTablet }) => {
     // 200% zoom halves the CSS viewport: 1280 → 640 on a desktop, 810 → 405 on the tablet; a
     // phone is taken to 320px, the narrowest width WCAG 1.4.10 (Reflow) asks for
@@ -1323,7 +1323,7 @@ test.describe('Zoom and large text', () => {
     expect(problems).toEqual([]);
   });
 
-  // APP BUG: on a phone with 200% text the compose toolbar doesn't wrap: "Help me write" and "Discard draft" are pushed off-screen
+  // Was a bug, now fixed: on a phone with 200% text the compose toolbar doesn't wrap: "Help me write" and "Discard draft" are pushed off-screen
   test('with text at 200%, the compose window keeps every button on screen', async ({ page }) => {
     await bigText(page);
     await page.goto('/');
@@ -1339,7 +1339,7 @@ test.describe('Zoom and large text', () => {
     expect(problems).toEqual([]);
   });
 
-  // APP BUG: on a phone with 200% text the Rules page scrolls sideways (the rule-kind <fieldset> keeps its min-content width)
+  // Was a bug, now fixed: on a phone with 200% text the Rules page scrolls sideways (the rule-kind <fieldset> keeps its min-content width)
   test('with text at 200%, the Rules page does not scroll sideways', async ({ page }) => {
     await bigText(page);
     expect(await layoutTour(page, ['/rules'])).toEqual([]);
@@ -1413,7 +1413,7 @@ test.describe('Forced colours', () => {
     return changedShare(before, after);
   }
 
-  // APP BUG: in forced-colours mode the switches in ⚙ Settings lose their knob, so on and off look the same
+  // Was a bug, now fixed: in forced-colours mode the switches in ⚙ Settings lose their knob, so on and off look the same
   test('switches still show whether they are on', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto('/');
@@ -1432,7 +1432,7 @@ test.describe('Forced colours', () => {
     expect(forced, 'share of the knob that changes in forced colours (on vs off)').toBeGreaterThan(0.15);
   });
 
-  // APP BUG: in forced-colours mode the selected option of the segmented pickers (Theme in ⚙, rule kind on Rules) is invisible
+  // Was a bug, now fixed: in forced-colours mode the selected option of the segmented pickers (Theme in ⚙, rule kind on Rules) is invisible
   test('the selected option of segmented pickers is still visible', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     const pickers: { url: string; open?: boolean; group: string; to: string; back: string }[] = [
@@ -1516,7 +1516,7 @@ test.describe('Reduce Motion', () => {
 
 // --- target sizes --------------------------------------------------------------------------------
 
-// APP BUG: on touch screens the email's toolbar buttons and the Move to buttons are 40px, and the menu's Categories / "Updated" rows 36px, under the 44px minimum
+// Was a bug, now fixed: on touch screens the email's toolbar buttons and the Move to buttons are 40px, and the menu's Categories / "Updated" rows 36px, under the 44px minimum
 test('touch targets are at least 44px on touch screens (24px with a mouse)', async ({ page, isPhone, isTablet }) => {
   const min = isPhone || isTablet ? 44 : 24;
   const small: string[] = [];

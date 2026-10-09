@@ -545,7 +545,7 @@ test.describe('Sent', () => {
     await expect(item.getByText(MAIL.body, { exact: true })).toBeVisible();
   });
 
-  // APP BUG: sending from the Sent page's own Compose leaves "Nothing sent yet" until a reload
+  // Was a bug, now fixed: sending from the Sent page's own Compose leaves "Nothing sent yet" until a reload
   test('an email written on Sent appears in the list straight away', async ({ page }) => {
     await page.goto('/sent');
     await expect(page.getByRole('heading', { name: 'Nothing sent yet' })).toBeVisible();
@@ -556,7 +556,7 @@ test.describe('Sent', () => {
     await expect(page.getByRole('heading', { name: 'Nothing sent yet' })).toHaveCount(0);
   });
 
-  // APP BUG: on Sent, a row keeps saying "Sending…" with Undo after "Message sent"
+  // Was a bug, now fixed: on Sent, a row keeps saying "Sending…" with Undo after "Message sent"
   test('the Sent list stops saying "Sending…" once the email has gone', async ({ page, sentMail }) => {
     await page.goto('/');
     await composeAndSend(page);
@@ -584,7 +584,7 @@ test.describe('Sent', () => {
     await expect(note(page, 'Sending…').getByRole('button', { name: 'Undo' })).toBeVisible();
   });
 
-  // APP BUG: "View" focuses the opened email, but the browser's jump to #sN takes focus away again
+  // Was a bug, now fixed: "View" focuses the opened email, but the browser's jump to #sN takes focus away again
   test('View in the "Sending…" snackbar puts keyboard focus on the opened email', async ({ page }) => {
     await page.goto('/');
     await composeAndSend(page);
@@ -763,7 +763,7 @@ test.describe('Sync', () => {
     await expect(nav.getByText(/problem/)).toHaveCount(0); // no account failed
   });
 
-  // APP BUG: the status pop-up is wider than the sidebar it sits in, so its right side is cut off
+  // Was a bug, now fixed: the status pop-up is wider than the sidebar it sits in, so its right side is cut off
   test('the status pop-up fits inside the sidebar', async ({ page }) => {
     await page.goto('/');
     const nav = await openSidebar(page);
@@ -858,7 +858,7 @@ test.describe('Error page', () => {
     await expect(page).toHaveURL(/\/$/);
   });
 
-  // APP BUG: a malformed email address (/message/abc) shows raw JSON instead of the error page
+  // Was a bug, now fixed: a malformed email address (/message/abc) shows raw JSON instead of the error page
   test('a malformed email link (/message/abc) shows the friendly error page too', async ({ page, allowErrors }) => {
     allowErrors.push(/status of 4\d\d/);
     const res = await page.goto('/message/abc');

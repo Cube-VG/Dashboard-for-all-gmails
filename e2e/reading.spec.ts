@@ -333,7 +333,7 @@ test.describe('Marking as read', () => {
     await expect(rowLink(page, CONTRACT)).toHaveAccessibleName(/^Priya Raman/);
   });
 
-  // APP BUG: when the last new email in a tab is read, the tab loses its number instead of showing its total (as it does after a reload)
+  // Was a bug, now fixed: when the last new email in a tab is read, the tab loses its number instead of showing its total (as it does after a reload)
   test('after reading every new email in a tab, the tab reads the same as after a reload', async ({ page, isPhone }) => {
     await page.goto('/');
     await openEmail(page, CONTRACT);
@@ -376,7 +376,7 @@ test.describe('Closing an email', () => {
 test.describe('In a long list', () => {
   test.use({ mailbox: 'big' });
 
-  // APP BUG: on desktop and tablet an email opened far down a long list shows scrolled to its end: subject, summary and Move to are off the top of the screen
+  // Was a bug, now fixed: on desktop and tablet an email opened far down a long list shows scrolled to its end: subject, summary and Move to are off the top of the screen
   test('an email opened from far down a long list starts at its top', async ({ page }) => {
     await page.goto('/');
     const target = list(page).getByRole('article').nth(39);
@@ -394,7 +394,7 @@ test.describe('In a long list', () => {
     await expect(aiCard(page).getByRole('group', { name: 'Move to' })).toBeInViewport();
   });
 
-  // APP BUG: on desktop and tablet, closing that email leaves its row at the bottom edge of the screen instead of where it was (only with Reduce Motion is it right)
+  // Was a bug, now fixed: on desktop and tablet, closing that email leaves its row at the bottom edge of the screen instead of where it was (only with Reduce Motion is it right)
   test('closing an email puts you back at the same place in the list', async ({ page }) => {
     await page.goto('/');
     const target = list(page).getByRole('article').nth(39);
@@ -502,7 +502,7 @@ test.describe('Move to', () => {
     await expect(row(page, CONTRACT)).toHaveCount(0);
   });
 
-  // APP BUG: a tab fetched in the background while a move is on its way is kept from before the move: switching to it right after shows the moved email missing
+  // Was a bug, now fixed: a tab fetched in the background while a move is on its way is kept from before the move: switching to it right after shows the moved email missing
   test('right after a move, the target tab lists the email even if it was fetched in the background meanwhile', async ({ page }) => {
     // A slow connection: the move takes a moment to reach the server, and meanwhile the dashboard
     // fetches the other tabs in the background (app.js warm()). The routes only fix the order:
@@ -590,7 +590,7 @@ test.describe('Move to', () => {
     await expect(row(page, TRIP, 'Schedule')).toBeVisible();
   });
 
-  // APP BUG: the email opened automatically after a move ("Open next email after an action") stays unread
+  // Was a bug, now fixed: the email opened automatically after a move ("Open next email after an action") stays unread
   test('after a move, the next email that opens is marked read like any email you open', async ({ page }) => {
     await page.goto('/');
     await openEmail(page, CONTRACT);

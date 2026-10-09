@@ -324,7 +324,7 @@ test.describe('Menu drawer on phones and tablets', () => {
     if (isPhone) await expect(mailboxes(page)).toBeHidden();
   });
 
-  // APP BUG: pressing c (Compose shortcut) with the menu open opens a new message on top of the still-open menu
+  // Was a bug, now fixed: pressing c (Compose shortcut) with the menu open opens a new message on top of the still-open menu
   test('the c shortcut with the menu open puts the menu away and opens a new message', async ({ page, isPhone }) => {
     await page.goto('/');
     await openMenu(page);
@@ -361,7 +361,7 @@ test.describe('Menu drawer over a long list', () => {
     test.skip(!isPhone && !isTablet, 'The desktop sidebar is always shown (no drawer)');
   });
 
-  // APP BUG: with the menu open, swiping up/down on the menu or the dimmed page scrolls the list behind it
+  // Was a bug, now fixed: with the menu open, swiping up/down on the menu or the dimmed page scrolls the list behind it
   test('while the menu is open, the list behind it does not scroll', async ({ page }) => {
     await page.goto('/?tab=later');
     await scrollTo(page, 600);
@@ -691,7 +691,7 @@ test.describe('Touch targets are at least 44px', () => {
     expect(await tooSmall(controls)).toEqual([]);
   });
 
-  // APP BUG: in the open menu, the Categories toggle and the "Updated …" status are 36px tall on touch screens
+  // Was a bug, now fixed: in the open menu, the Categories toggle and the "Updated …" status are 36px tall on touch screens
   test('the open menu: every link and toggle', async ({ page }) => {
     await page.goto('/');
     await openMenu(page);
@@ -706,7 +706,7 @@ test.describe('Touch targets are at least 44px', () => {
     expect(await tooSmall(controls)).toEqual([]);
   });
 
-  // APP BUG: the open email's toolbar (Back, Mark as read, Move to, Newer/Older) is 40px on touch screens
+  // Was a bug, now fixed: the open email's toolbar (Back, Mark as read, Move to, Newer/Older) is 40px on touch screens
   test('an open email: Back, Mark as read, Move to and the reply buttons', async ({ page, isPhone }) => {
     await page.goto('/');
     await openEmail(page, CONTRACT);
@@ -721,7 +721,7 @@ test.describe('Touch targets are at least 44px', () => {
     expect(await tooSmall(controls)).toEqual([]);
   });
 
-  // APP BUG: in a new message, Send and Help me write are 40px tall on touch screens
+  // Was a bug, now fixed: in a new message, Send and Help me write are 40px tall on touch screens
   test('a new message: Send, Help me write, Save & close and Discard', async ({ page }) => {
     await page.goto('/');
     await press(page, composeControl(page));
@@ -804,7 +804,7 @@ test.describe('With Reduce Motion', () => {
     await expectDraftRestored(page);
   });
 
-  // APP BUG: with Reduce Motion on, the swipe gestures do nothing at all (README: "things fade instead of sliding")
+  // Was a bug, now fixed: with Reduce Motion on, the swipe gestures do nothing at all (README: "things fade instead of sliding")
   test('the swipe gestures still work, they just fade instead of sliding', async ({ page, isPhone, isTablet }) => {
     test.skip(!isPhone && !isTablet, 'Desktop has no touch gestures');
     await page.goto('/');
@@ -877,7 +877,7 @@ test.describe('Desktop sidebar', () => {
     await expect(fullSidebarLabel(page)).toBeVisible();
   });
 
-  // APP BUG: on desktop the menu button always says "collapsed" (aria-expanded=false), even with the full sidebar shown
+  // Was a bug, now fixed: on desktop the menu button always says "collapsed" (aria-expanded=false), even with the full sidebar shown
   test('the menu button tells screen readers whether the menu is expanded', async ({ page, isPhone, isTablet }) => {
     await page.goto('/');
     if (isPhone || isTablet) {

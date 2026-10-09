@@ -554,7 +554,7 @@ test.describe('Replying outside the inbox', () => {
     await send(page, form);
     await messageSent(page);
     expect(await sentMail()).toMatchObject([{ to: PRIYA, in_reply_to: '<m1@demo>' }]);
-    // APP BUG: on /message/N the email isn't marked Replied after "Message sent" until the page is reloaded
+    // Was a bug, now fixed: on /message/N the email isn't marked Replied after "Message sent" until the page is reloaded
     await expect.soft(main.getByText('Replied', { exact: true }), 'Replied shows without a reload').toBeVisible();
     await page.reload();
     await expect(main.getByText('Replied', { exact: true })).toBeVisible();
@@ -761,7 +761,7 @@ test.describe('Help me write', () => {
     answer();
     await expect(f.body).toHaveValue(DRAFT_YES);
     await expect(form.getByText('Writing…')).toHaveCount(0);
-    // APP BUG: text typed while Help me write is working is overwritten by the draft, and Undo only brings back what was there before Create
+    // Was a bug, now fixed: text typed while Help me write is working is overwritten by the draft, and Undo only brings back what was there before Create
     await press(note(page, 'Draft ready').getByRole('button', { name: 'Undo' }));
     await expect(f.body, 'Undo brings back everything that was in the box').toHaveValue(meanwhile);
   });
@@ -848,7 +848,7 @@ test.describe('Help me write', () => {
     await expect(f.subject).toHaveValue('March invoice');
 
     // the message stays up until dismissed, so it must leave the field and Create in reach
-    // APP BUG: on a phone the error snackbar sits on top of Help me write's field and Create button in the full-screen compose sheet
+    // Was a bug, now fixed: on a phone the error snackbar sits on top of Help me write's field and Create button in the full-screen compose sheet
     expect.soft(await reachable(f.ask), 'the Help me write field is not under the snackbar').toBe(true);
     expect.soft(await reachable(f.create), 'Create is not under the snackbar').toBe(true);
     if (!(await reachable(f.create))) await press(err.getByRole('button', { name: 'Dismiss' })); // to go on

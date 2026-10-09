@@ -186,9 +186,14 @@ loginTest.describe('Sign in', () => {
       ['/outbox/1/undo', {}],
     ];
     for (const [path, form] of posts) {
-      const r = await page.request.post(path, { form, maxRedirects: 0 });
+      // the page's own scripts ask for JSON and are told to sign in again
+      const r = await page.request.post(path, { form, maxRedirects: 0, headers: { Accept: 'application/json' } });
       expect(r.status(), `POST ${path}`).toBe(401);
       expect(await r.json(), `POST ${path}`).toMatchObject({ ok: false, message: 'Please sign in again' });
+      // a plain form (no JavaScript) is sent to sign in instead of a page of JSON
+      const plain = await page.request.post(path, { form, maxRedirects: 0 });
+      expect(plain.status(), `plain POST ${path}`).toBe(303);
+      expect(plain.headers().location, `plain POST ${path}`).toMatch(/^\/login\?next=/);
     }
     await page.goto('/');
     await signIn(page);
@@ -437,7 +442,7 @@ loginTest.describe('Sign in', () => {
       await expectSignInPage(page, '/sent');
     });
 
-    // APP BUG: without JS, a form posted after the session ended shows raw JSON ({"ok":false,…}) instead of the sign-in page
+    // Was a bug, now fixed: without JS, a form posted after the session ended shows raw JSON ({"ok":false,…}) instead of the sign-in page
     loginTest('a button pressed after the session ended goes to sign in, not a page of code', async ({ page, context, allowErrors }) => {
       allowErrors.push(/status of 401/);
       await page.goto('/?open=2');
@@ -467,7 +472,7 @@ test.describe('Without JavaScript', () => {
       await expect(rows(page, 'Do now').nth(1)).toContainText(SUBJECT.payment);
     });
 
-    // APP BUG: without JS on a phone the menu becomes a screen-high column of unlabeled icons above the inbox (rail CSS applies)
+    // Was a bug, now fixed: without JS on a phone the menu becomes a screen-high column of unlabeled icons above the inbox (rail CSS applies)
     test('the first email is on screen without scrolling', async ({ page }) => {
       await page.goto('/');
       await expect(rows(page, 'Do now').first()).toBeInViewport();
@@ -721,7 +726,7 @@ test.describe('Without JavaScript', () => {
       await expect(f.subject).toHaveValue('Re: Sunday lunch?');
     });
 
-    // APP BUG: on a phone the Compose fields are 15px (Help me write 14px), so iPhone Safari zooms the page in when you tap into them
+    // Was a bug, now fixed: on a phone the Compose fields are 15px (Help me write 14px), so iPhone Safari zooms the page in when you tap into them
     test('on a phone the Compose fields are 16px, so the iPhone doesn\'t zoom in', async ({ page, isPhone }) => {
       test.skip(!isPhone, 'only iPhone Safari zooms into text fields under 16px');
       await page.goto('/compose');
@@ -733,7 +738,7 @@ test.describe('Without JavaScript', () => {
       }
     });
 
-    // APP BUG: without JS the Cc, Bcc and "Help me write" buttons are shown but do nothing (those rows are already open)
+    // Was a bug, now fixed: without JS the Cc, Bcc and "Help me write" buttons are shown but do nothing (those rows are already open)
     test('Compose shows no buttons that do nothing', async ({ page }) => {
       await page.goto('/compose');
       const form = page.getByRole('form', { name: 'New message' });
@@ -745,7 +750,7 @@ test.describe('Without JavaScript', () => {
     });
   });
 
-  // APP BUG: without JS the Main menu button is shown on desktop and tablet but does nothing (hidden only on phones)
+  // Was a bug, now fixed: without JS the Main menu button is shown on desktop and tablet but does nothing (hidden only on phones)
   test('the Main menu button is hidden when it can\'t open anything', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('navigation', { name: 'Mailboxes' })).toBeVisible();

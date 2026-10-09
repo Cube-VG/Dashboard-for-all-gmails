@@ -414,7 +414,7 @@ test.describe('Search in place, Back and clearing', () => {
     await expect(box, 'the keyboard goes away after searching').not.toBeFocused();
   });
 
-  // APP BUG: "/" focuses the form's first <input>, the hidden view=… field, so the search box never gets the cursor.
+  // Was a bug, now fixed: "/" focuses the form's first <input>, the hidden view=… field, so the search box never gets the cursor.
   test('"/" puts the cursor in the search box, with the old search selected', async ({ page }) => {
     test.skip(onPhone(), 'a phone has no hardware keyboard: there the box is tapped in the top bar (tested above)');
     await page.goto('/?view=all&q=digest');
@@ -539,7 +539,7 @@ test.describe('Search in place, Back and clearing', () => {
     await expect(subjects(page)).toHaveText(ALL);
   });
 
-  // APP BUG: the ✕ inside the search box only empties the field; the results stay filtered by the old search.
+  // Was a bug, now fixed: the ✕ inside the search box only empties the field; the results stay filtered by the old search.
   test('the ✕ inside the search box clears the search, not just the text', async ({ page }) => {
     await page.goto('/');
     await search(page, 'digest');
@@ -717,7 +717,7 @@ test.describe('Filters', () => {
     await expectFitsScreen(page, page.locator('.list-toolbar').getByRole('link'));
   });
 
-  // APP BUG: on touch screens the filter chips are 40px tall and "Clear filters" only 20px, under the 44px the design asks for.
+  // Was a bug, now fixed: on touch screens the filter chips are 40px tall and "Clear filters" only 20px, under the 44px the design asks for.
   test('filter chips and Clear filters are at least 44px tall on a touch screen', async ({ page }) => {
     test.skip(isDesktop(), 'the 44px rule is for touch (coarse pointer); a mouse gets the compact 32px chips by design');
     await page.goto('/?view=all&account=sam%40gmail.com&q=top');
@@ -818,7 +818,7 @@ test.describe('Not sorted', () => {
       await expect(page.getByRole('listitem').filter({ hasText: s.email })).toHaveCount(0);
     });
 
-    // APP BUG: a rule made from a suggestion sorts nothing: the sender's mail stays in Not sorted and the sender stays suggested.
+    // Was a bug, now fixed: a rule made from a suggestion sorts nothing: the sender's mail stays in Not sorted and the sender stays suggested.
     test('"Low" on a suggested sender sorts their waiting mail now, and they leave the suggestions', async ({ page }) => {
       const { senders, unsorted, fromSender } = big();
       const s = senders[0];
@@ -840,7 +840,7 @@ test.describe('Not sorted', () => {
       }
     });
 
-    // APP BUG: after "Important" the sender's row stays, still offering Important and Low (a second tap can add a contradicting rule).
+    // Was a bug, now fixed: after "Important" the sender's row stays, still offering Important and Low (a second tap can add a contradicting rule).
     test('"Important" on a suggested sender takes them off the suggestions', async ({ page }) => {
       const s = big().senders[2];
       await page.goto('/?tab=unsorted');
